@@ -1,6 +1,7 @@
 <?php
 require_once '../includes/auth.php';
 require_once '../config/db.php';
+require_once '../includes/functions.php';
 
 requireAuth('tutor');
 
@@ -37,10 +38,9 @@ if ($filterStatus !== '') {
   $where[] = "LOWER(p.status) = ?";
   $params[] = strtolower($filterStatus);
 }
-
 $whereSQL = "WHERE " . implode(" AND ", $where);
 
-// Table rows (server-side)
+// Table rows
 $stmt = $pdo->prepare("
   SELECT
     p.id AS placement_id,
@@ -55,8 +55,8 @@ $stmt = $pdo->prepare("
     u.email     AS student_email,
     u.avatar_initials AS student_initials,
 
-    c.name   AS company_name,
-    c.city   AS company_city,
+    c.name AS company_name,
+    c.city AS company_city,
 
     (SELECT COUNT(*) FROM reflections r WHERE r.placement_id = p.id) AS reflections_count,
     (SELECT MAX(r.created_at) FROM reflections r WHERE r.placement_id = p.id) AS last_reflection_at,
@@ -88,6 +88,7 @@ function fmtDateTime($dt) {
   return date('d M Y, g:i A', $ts);
 }
 ?>
+
 <?php include '../includes/header.php'; ?>
 
 <div class="main">
@@ -97,10 +98,8 @@ function fmtDateTime($dt) {
 
     <!-- Filter bar -->
     <form method="GET" class="filter-bar" style="margin-bottom:1.25rem;">
-      <input type="text" name="student" value="<?= htmlspecialchars($filterStudent) ?>"
-             placeholder="🔎 Student name...">
-      <input type="text" name="company" value="<?= htmlspecialchars($filterCompany) ?>"
-             placeholder="🏢 Company name...">
+      <input type="text" name="student" value="<?= htmlspecialchars($filterStudent) ?>" placeholder="🔎 Student name...">
+      <input type="text" name="company" value="<?= htmlspecialchars($filterCompany) ?>" placeholder="🏢 Company name...">
 
       <select name="status" onchange="this.form.submit()">
         <option value="">All Statuses</option>
@@ -118,7 +117,7 @@ function fmtDateTime($dt) {
       </div>
     </form>
 
-    <!-- KPI ROW (AJAX will fill) -->
+    <!-- KPI ROW -->
     <div style="display:grid;grid-template-columns:repeat(4,minmax(220px,1fr));gap:1rem;margin-bottom:1.25rem;">
       <div class="panel" style="margin-bottom:0;padding:1.1rem 1.25rem;">
         <p style="font-size:0.75rem;color:var(--muted);text-transform:uppercase;font-weight:700;letter-spacing:.05em;">Total Placements</p>
@@ -138,7 +137,7 @@ function fmtDateTime($dt) {
       </div>
     </div>
 
-    <!-- CHARTS (AJAX will fill) -->
+    <!-- CHARTS -->
     <div style="display:grid;grid-template-columns:repeat(2,minmax(320px,1fr));gap:1rem;margin-bottom:1.25rem;">
       <div class="panel" style="margin-bottom:0;">
         <div class="panel-header"><h3 style="font-size:1rem;">Placements by Status</h3></div>
@@ -161,7 +160,7 @@ function fmtDateTime($dt) {
       </div>
     </div>
 
-    <!-- TABLE (server side) -->
+    <!-- TABLE -->
     <div class="panel">
       <div class="panel-header">
         <div>
@@ -231,18 +230,9 @@ function fmtDateTime($dt) {
 
                 <td>
                   <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-                    <a class="btn btn-ghost btn-sm"
-                       href="/inplace/tutor/all-placements.php#detail-<?= (int)$r['placement_id'] ?>">
-                      View
-                    </a>
-                    <a class="btn btn-primary btn-sm"
-                       href="/inplace/tutor/schedule-visit.php?placement_id=<?= (int)$r['placement_id'] ?>">
-                      🗓 Visit
-                    </a>
-                    <a class="btn btn-ghost btn-sm"
-                       href="/inplace/tutor/messages.php?student_id=<?= (int)$r['student_id'] ?>">
-                      💬 Message
-                    </a>
+                    <a class="btn btn-ghost btn-sm" href="/inplace/tutor/all-placements.php#detail-<?= (int)$r['placement_id'] ?>">View</a>
+                    <a class="btn btn-primary btn-sm" href="/inplace/tutor/schedule-visit.php?placement_id=<?= (int)$r['placement_id'] ?>">🗓 Visit</a>
+                    <a class="btn btn-ghost btn-sm" href="/inplace/tutor/messages.php?student_id=<?= (int)$r['student_id'] ?>">💬 Message</a>
                   </div>
                 </td>
               </tr>
@@ -259,14 +249,7 @@ function fmtDateTime($dt) {
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
-const charts = {}; // store Chart.js instances
-
-function toLabelsAndValues(arr, labelKey, valueKey) {
-  return {
-    labels: (arr || []).map(x => (x[labelKey] ?? 'Unknown')),
-    values: (arr || []).map(x => Number(x[valueKey] ?? 0))
-  };
-}
+const charts = {};
 
 function upsertChart(id, type, labels, values, options = {}) {
   const el = document.getElementById(id);
@@ -276,11 +259,10 @@ function upsertChart(id, type, labels, values, options = {}) {
     charts[id] = new Chart(el, {
       type,
       data: { labels, datasets: [{ data: values }] },
-      options: Object.assign({ responsive: true }, options)
+      options: Object.assign({ responsive: true, maintainAspectRatio: false }, options)
     });
     return;
   }
-
   charts[id].data.labels = labels;
   charts[id].data.datasets[0].data = values;
   charts[id].update();
@@ -288,7 +270,6 @@ function upsertChart(id, type, labels, values, options = {}) {
 
 function buildUrlWithCurrentFilters() {
   const params = new URLSearchParams(window.location.search);
-  // Keep student/company/status from URL (server uses same)
   return '/inplace/tutor/api/reports-metrics.php?' + params.toString();
 }
 
@@ -296,61 +277,65 @@ async function refreshMetrics() {
   const statusEl = document.getElementById('liveStatus');
   try {
     const url = buildUrlWithCurrentFilters();
-    const res = await fetch(url, { cache: 'no-store' });
-    const data = await res.json();
+    const res = await fetch(url, { cache: 'no-store', credentials: 'same-origin' });
 
-    if (!data.ok) throw new Error('API returned not ok');
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch (e) { throw new Error("API did not return JSON. Got: " + text.slice(0,120)); }
 
-    // KPIs
+    if (!res.ok || !data.ok) throw new Error(data.error || "API error");
+
     document.getElementById('kpiPlacements').textContent  = data.kpis.totalPlacements ?? '—';
     document.getElementById('kpiReflections').textContent = data.kpis.totalReflections ?? '—';
     document.getElementById('kpiVisits').textContent      = data.kpis.totalVisits ?? '—';
     document.getElementById('kpiAvg').textContent         = data.kpis.avgReflections ?? '—';
 
-    // Charts
-    // 1) Status donut
-    {
-      const d = toLabelsAndValues(data.charts.status, 'status', 'cnt');
-      upsertChart('chartStatus', 'doughnut', d.labels, d.values, {
-        plugins: { legend: { position: 'bottom' } }
-      });
-    }
+    // Status doughnut
+    upsertChart(
+      'chartStatus',
+      'doughnut',
+      (data.charts.status || []).map(x => x.status),
+      (data.charts.status || []).map(x => Number(x.cnt || 0)),
+      { plugins: { legend: { position: 'bottom' } } }
+    );
 
-    // 2) City bar
-    {
-      const d = toLabelsAndValues(data.charts.city, 'city', 'cnt');
-      upsertChart('chartCity', 'bar', d.labels, d.values, {
-        plugins: { legend: { display: false } }
-      });
-    }
+    // City bar
+    upsertChart(
+      'chartCity',
+      'bar',
+      (data.charts.city || []).map(x => x.city),
+      (data.charts.city || []).map(x => Number(x.cnt || 0)),
+      { plugins: { legend: { display: false } } }
+    );
 
-    // 3) Reflection trend line
-    {
-      const labels = (data.charts.reflectionTrend || []).map(x => x.yearweek);
-      const values = (data.charts.reflectionTrend || []).map(x => Number(x.cnt || 0));
-      upsertChart('chartRefTrend', 'line', labels, values, {
-        plugins: { legend: { display: false } },
-        elements: { line: { tension: 0.3 } }
-      });
-    }
+    // Reflection trend line
+    upsertChart(
+      'chartRefTrend',
+      'line',
+      (data.charts.reflectionTrend || []).map(x => x.yearweek),
+      (data.charts.reflectionTrend || []).map(x => Number(x.cnt || 0)),
+      { plugins: { legend: { display: false } }, elements: { line: { tension: 0.3 } } }
+    );
 
-    // 4) Visit type bar
-    {
-      const d = toLabelsAndValues(data.charts.visitType, 'type', 'cnt');
-      upsertChart('chartVisitType', 'bar', d.labels, d.values, {
-        plugins: { legend: { display: false } }
-      });
-    }
+    // Visit type bar
+    upsertChart(
+      'chartVisitType',
+      'bar',
+      (data.charts.visitType || []).map(x => x.type),
+      (data.charts.visitType || []).map(x => Number(x.cnt || 0)),
+      { plugins: { legend: { display: false } } }
+    );
 
     const t = new Date((data.ts || Date.now()/1000) * 1000);
     statusEl.textContent = 'Live: updated ' + t.toLocaleTimeString();
+
   } catch (e) {
-    statusEl.textContent = 'Live: error (check API path / DB tables)';
+    statusEl.textContent = 'Live: error (open /inplace/tutor/api/reports-metrics.php)';
     console.error(e);
   }
 }
 
-// initial + polling
 refreshMetrics();
 setInterval(refreshMetrics, 10000);
 </script>

@@ -12,22 +12,21 @@ $error = '';
 $email = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-  $email = trim($_POST['email'] ?? '');
-  $password = $_POST['password'] ?? '';
-  $selectedRole = strtolower(trim($_POST['selected_role'] ?? '')); // optional UI role
+  $email        = trim($_POST['email'] ?? '');
+  $password     = $_POST['password'] ?? '';
+  $selectedRole = strtolower(trim($_POST['selected_role'] ?? 'student'));
 
   $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? LIMIT 1");
   $stmt->execute([$email]);
   $u = $stmt->fetch();
 
   if ($u && password_verify($password, $u['password'])) {
+    $dbRole = strtolower(trim($u['role'] ?? ''));
 
-    // OPTIONAL: if you want role enforcement, uncomment this block
-    /*
-    if ($selectedRole && strtolower($u['role']) !== $selectedRole) {
-      $error = "This account is not a " . e(ucfirst($selectedRole)) . " account.";
+    // Enforce role match
+    if ($selectedRole && $dbRole !== $selectedRole) {
+      $error = "You selected " . e(ucfirst($selectedRole)) . " but this account is a " . e(ucfirst($dbRole)) . " account.";
     } else {
-    */
       $_SESSION['user'] = [
         'id' => (int)$u['id'],
         'full_name' => $u['full_name'],
@@ -37,7 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       ];
       header("Location: /inplace/dashboard.php");
       exit;
-    // }
+    }
   } else {
     $error = "Invalid email or password.";
   }
@@ -46,8 +45,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>InPlace — Login</title>
 
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -82,9 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <p>Sign in with your university credentials</p>
 
       <?php if ($error): ?>
-        <div class="alert-danger">
-          <?= e($error) ?>
-        </div>
+        <div class="alert-danger"><?= e($error) ?></div>
       <?php endif; ?>
 
       <div class="role-selector" id="roleSelector">
@@ -131,7 +128,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <button class="btn-login" type="submit">Sign In with University SSO →</button>
       </form>
 
-    
+      <!-- TIP REMOVED (you asked to hide it) -->
     </div>
   </div>
 </div>

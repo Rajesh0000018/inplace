@@ -1350,3 +1350,320 @@ tbody tr:hover { background: #f9fafc; }
   .login-right{ width: 100%; }
   .login-left{ padding: 3.5rem 2rem; }
 }
+:root {
+  --navy: #0c1b33;
+  --navy-mid: #162644;
+  --navy-light: #1e3a5f;
+  --gold: #e8a020;
+  --gold-light: #fbbf24;
+  --cream: #faf8f4;
+  --text: #1a2332;
+  --muted: #6b7a8d;
+  --border: #e2e6ec;
+  --white: #ffffff;
+  --danger: #dc2626;
+  --danger-bg: #fee2e2;
+  --radius: 14px;
+  --radius-sm: 8px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 16px; }
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: var(--cream);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ---- LOGIN ---- */
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  background: var(--navy);
+  position: relative;
+  overflow: hidden;
+}
+
+.login-decoration {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.login-decoration::before {
+  content: '';
+  position: absolute;
+  top: -200px; right: -200px;
+  width: 700px; height: 700px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(232,160,32,0.12) 0%, transparent 70%);
+}
+
+.login-decoration::after {
+  content: '';
+  position: absolute;
+  bottom: -300px; left: -200px;
+  width: 800px; height: 800px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(30,58,95,0.8) 0%, transparent 70%);
+}
+
+.login-left {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 7rem;   /* BIGGER (match html feel) */
+  position: relative;
+  z-index: 2;
+}
+
+.login-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(232,160,32,0.15);
+  border: 1px solid rgba(232,160,32,0.3);
+  border-radius: 50px;
+  padding: 0.4rem 1rem;
+  color: var(--gold);
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-bottom: 2.75rem;
+  width: fit-content;
+}
+.login-badge::before { content: '●'; font-size: 0.5rem; }
+
+.login-left h1 {
+  font-family: 'Playfair Display', serif;
+  font-size: 5.1rem; /* BIGGER */
+  color: var(--white);
+  line-height: 1.05;
+  margin-bottom: 1.75rem;
+}
+.login-left h1 span { color: var(--gold); }
+
+.login-left p {
+  color: rgba(255,255,255,0.55);
+  font-size: 1.15rem; /* BIGGER */
+  line-height: 1.7;
+  max-width: 560px;   /* wider */
+  margin-bottom: 3.25rem;
+}
+
+.login-features { display: flex; flex-direction: column; gap: 1.15rem; }
+
+.login-feature {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  color: rgba(255,255,255,0.65);
+  font-size: 1.05rem;
+}
+
+.login-feature-icon {
+  width: 44px; height: 44px;
+  border-radius: 12px;
+  background: rgba(232,160,32,0.1);
+  border: 1px solid rgba(232,160,32,0.2);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--gold);
+  flex-shrink: 0;
+  font-size: 1.05rem;
+}
+
+.login-right {
+  width: 600px; /* BIGGER card area like html screenshot */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 3.5rem;
+  position: relative;
+  z-index: 2;
+}
+
+.login-card {
+  background: var(--white);
+  border-radius: 24px;
+  padding: 3.2rem; /* BIGGER */
+  width: 100%;
+  box-shadow: 0 40px 80px rgba(0,0,0,0.4);
+}
+
+.login-card h2 {
+  font-family: 'Playfair Display', serif;
+  font-size: 2.05rem;
+  color: var(--navy);
+  margin-bottom: 0.5rem;
+}
+
+.login-card p {
+  color: var(--muted);
+  font-size: 0.98rem;
+  margin-bottom: 2rem;
+}
+
+.role-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+  margin-bottom: 1.85rem;
+}
+
+.role-btn {
+  padding: 1.05rem;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.role-btn.active {
+  border-color: var(--navy);
+  background: var(--navy);
+  color: var(--white);
+}
+
+.role-btn h4 { font-size: 0.95rem; font-weight: 600; }
+.role-btn p  { font-size: 0.8rem; color: inherit; opacity: 0.65; margin-top: 0.25rem; }
+
+.form-field { margin-bottom: 1.25rem; }
+
+.form-field label {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 0.5rem;
+}
+
+.form-field input {
+  width: 100%;
+  padding: 1rem 1.1rem;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 1rem;
+  color: var(--text);
+  background: var(--cream);
+  transition: border-color 0.2s;
+}
+
+.form-field input:focus {
+  outline: none;
+  border-color: var(--navy);
+  background: var(--white);
+}
+
+.btn-login {
+  width: 100%;
+  padding: 1.1rem;
+  background: var(--navy);
+  color: var(--white);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 1.05rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-login::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, var(--gold) 0%, transparent 60%);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.btn-login:hover::before { opacity: 0.15; }
+.btn-login:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(12,27,51,0.3); }
+
+.alert-danger {
+  margin-bottom: 1rem;
+  padding: 0.875rem;
+  border-radius: 10px;
+  background: var(--danger-bg);
+  border: 1px solid #fca5a5;
+  color: var(--danger);
+}
+
+/* Responsive */
+@media (max-width: 1100px){
+  .login-screen { flex-direction: column; }
+  .login-right { width: 100%; }
+  .login-left { padding: 3.5rem 2rem; }
+}
+/* ==============================
+   LOGIN CARD SPACING IMPROVEMENT
+   ============================== */
+
+/* Make right panel wider */
+.login-right {
+  width: 680px !important;
+}
+
+/* Increase card size */
+.login-card {
+  padding: 3.8rem !important;
+  border-radius: 28px !important;
+}
+
+/* More spacing under subtitle */
+.login-card > p {
+  margin-bottom: 2.5rem !important;
+}
+
+/* Make role selector breathe */
+.role-selector {
+  gap: 1.1rem !important;
+  margin-bottom: 2.2rem !important;
+}
+
+/* Make role buttons taller */
+.role-btn {
+  padding: 1.4rem 1rem !important;
+  border-radius: 12px !important;
+}
+
+.role-btn h4 {
+  font-size: 1.05rem !important;
+  margin-bottom: 0.35rem !important;
+}
+
+.role-btn p {
+  font-size: 0.9rem !important;
+}
+
+/* Increase form spacing */
+.form-field {
+  margin-bottom: 1.6rem !important;
+}
+
+.form-field input {
+  padding: 1.15rem 1.2rem !important;
+  font-size: 1.05rem !important;
+  border-radius: 10px !important;
+}
+
+/* Bigger button */
+.btn-login {
+  padding: 1.25rem !important;
+  font-size: 1.1rem !important;
+  border-radius: 10px !important;
+}
+
+/* Add more breathing at bottom */
+.login-card form {
+  margin-bottom: 0.5rem !important;
+}
