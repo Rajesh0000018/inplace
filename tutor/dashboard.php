@@ -17,20 +17,9 @@ $unreadCount = (int)$stmt->fetchColumn();
 $stmt = $pdo->query("SELECT COUNT(*) FROM placements WHERE LOWER(status) IN ('submitted','awaiting_tutor','awaiting_provider')");
 $pendingRequests = (int)$stmt->fetchColumn();
 
-// KPIs
+// Counts used in Quick Actions
 $stmt = $pdo->query("SELECT COUNT(*) FROM placements WHERE LOWER(status) IN ('approved','active')");
 $totalActive = (int)$stmt->fetchColumn();
-
-$stmt = $pdo->query("SELECT COUNT(*) FROM placements WHERE LOWER(status) IN ('submitted','awaiting_tutor','awaiting_provider')");
-$totalPending = (int)$stmt->fetchColumn();
-
-$stmt = $pdo->query("
-  SELECT COUNT(*)
-  FROM visits
-  WHERE visit_date >= CURDATE()
-    AND LOWER(status) IN ('proposed','confirmed')
-");
-$upcomingVisits = (int)$stmt->fetchColumn();
 ?>
 <?php include '../includes/header.php'; ?>
 
@@ -39,42 +28,34 @@ $upcomingVisits = (int)$stmt->fetchColumn();
 
   <div class="page-content">
 
-    <!-- Stats -->
-    <div class="stats-grid">
-      <div class="stat-card">
-        <span class="stat-icon">👥</span>
-        <h3><?= $totalActive ?></h3>
-        <p>Students on Placement</p>
-        <div class="stat-trend trend-up">Active placements</div>
+    <!-- ✅ QUICK ACTIONS MOVED TO TOP -->
+    <div class="quick-actions" style="margin-top:0.5rem;">
+      <div class="quick-action" onclick="window.location='/inplace/tutor/requests.php'">
+        <div class="qa-icon">📋</div>
+        <div class="qa-label">Auth Requests</div>
+        <div class="qa-desc"><?= $pendingRequests ?> pending review</div>
       </div>
 
-      <div class="stat-card">
-        <span class="stat-icon">📋</span>
-        <h3><?= $totalPending ?></h3>
-        <p>Pending Requests</p>
-        <div class="stat-trend <?= $totalPending > 0 ? 'trend-neutral' : 'trend-up' ?>">
-          <?= $totalPending > 0 ? 'Requires your attention' : 'All clear!' ?>
-        </div>
+      <div class="quick-action" onclick="window.location='/inplace/tutor/all-placements.php'">
+        <div class="qa-icon">👥</div>
+        <div class="qa-label">All Placements</div>
+        <div class="qa-desc"><?= $totalActive ?> active students</div>
       </div>
 
-      <div class="stat-card">
-        <span class="stat-icon">🗓</span>
-        <h3><?= $upcomingVisits ?></h3>
-        <p>Upcoming Visits</p>
-        <div class="stat-trend trend-neutral">Planned visits</div>
+      <div class="quick-action" onclick="window.location='/inplace/tutor/visits.php'">
+        <div class="qa-icon">🗓</div>
+        <div class="qa-label">Visit Planner</div>
+        <div class="qa-desc">Schedule visits</div>
       </div>
 
-      <div class="stat-card">
-        <span class="stat-icon">💬</span>
-        <h3><?= $unreadCount ?></h3>
-        <p>Unread Messages</p>
-        <div class="stat-trend trend-neutral">
-          <?= $unreadCount > 0 ? 'From students' : 'All caught up!' ?>
-        </div>
+      <div class="quick-action" onclick="window.location='/inplace/tutor/messages.php'">
+        <div class="qa-icon">💬</div>
+        <div class="qa-label">Messages</div>
+        <div class="qa-desc"><?= $unreadCount > 0 ? $unreadCount . ' unread' : 'No new messages' ?></div>
       </div>
     </div>
 
-    <!-- ✅ CHARTS (only once) -->
+    <!-- ✅ CHARTS -->
     <div style="display:grid;grid-template-columns:repeat(2,minmax(320px,1fr));gap:1rem;margin-top:1.25rem;">
       <div class="panel" style="margin-bottom:0;">
         <div class="panel-header"><h3 style="font-size:1rem;">Placements by Status</h3></div>
@@ -108,33 +89,6 @@ $upcomingVisits = (int)$stmt->fetchColumn();
     <small id="dashLive" style="display:block;margin-top:0.75rem;color:var(--muted);">
       Live: loading…
     </small>
-
-    <!-- ✅ KEEP ONLY THIS Quick Actions (the bottom one with navigation) -->
-    <div class="quick-actions" style="margin-top:1.25rem;">
-      <div class="quick-action" onclick="window.location='/inplace/tutor/requests.php'">
-        <div class="qa-icon">📋</div>
-        <div class="qa-label">Auth Requests</div>
-        <div class="qa-desc"><?= $pendingRequests ?> pending review</div>
-      </div>
-
-      <div class="quick-action" onclick="window.location='/inplace/tutor/all-placements.php'">
-        <div class="qa-icon">👥</div>
-        <div class="qa-label">All Placements</div>
-        <div class="qa-desc"><?= $totalActive ?> active students</div>
-      </div>
-
-      <div class="quick-action" onclick="window.location='/inplace/tutor/visits.php'">
-        <div class="qa-icon">🗓</div>
-        <div class="qa-label">Visit Planner</div>
-        <div class="qa-desc">Schedule visits</div>
-      </div>
-
-      <div class="quick-action" onclick="window.location='/inplace/tutor/messages.php'">
-        <div class="qa-icon">💬</div>
-        <div class="qa-label">Messages</div>
-        <div class="qa-desc"><?= $unreadCount > 0 ? $unreadCount . ' unread' : 'No new messages' ?></div>
-      </div>
-    </div>
 
   </div>
 </div>
@@ -178,17 +132,15 @@ async function refreshDashboardCharts() {
   try {
     const res = await fetch('/inplace/tutor/api/dashboard-metrics.php', { cache: 'no-store' });
     const data = await res.json();
-
     if (!data.ok) throw new Error(data.error || 'API error');
 
     const NAVY = cssVar('--navy', '#0c1b33');
     const GOLD = cssVar('--gold', '#e8a020');
 
-    // ✅ 1) Placements by Status (charts.status)
+    // 1) Placements by Status
     {
       const labels = (data.charts.status || []).map(x => x.status);
       const values = (data.charts.status || []).map(x => Number(x.cnt || 0));
-
       upsertChart('dashChartStatus', 'doughnut', labels, values, {
         plugins: { legend: { position: 'bottom' } }
       }, {
@@ -196,43 +148,36 @@ async function refreshDashboardCharts() {
       });
     }
 
-    // ✅ 2) Placements by City (charts.city)
+    // 2) Placements by City (Top 8)
     {
       const labels = (data.charts.city || []).map(x => x.city);
       const values = (data.charts.city || []).map(x => Number(x.cnt || 0));
-
       upsertChart('dashChartCity', 'bar', labels, values, {
         plugins: { legend: { display: false } }
-      }, {
-        backgroundColor: NAVY
-      });
+      }, { backgroundColor: NAVY });
     }
 
-    // ✅ 3) Reflections Trend (charts.reflectionTrend uses key "week")
+    // 3) Reflections Trend (week)
     {
       const labels = (data.charts.reflectionTrend || []).map(x => x.week);
       const values = (data.charts.reflectionTrend || []).map(x => Number(x.cnt || 0));
-
       upsertChart('dashChartRefTrend', 'line', labels, values, {
         plugins: { legend: { display: false } },
         elements: { line: { tension: 0.3 } }
       }, {
         borderColor: NAVY,
-        backgroundColor: GOLD,
+        pointBackgroundColor: GOLD,
         fill: false
       });
     }
 
-    // ✅ 4) Visits by Status (charts.visits)
+    // 4) Visits by Status
     {
       const labels = (data.charts.visits || []).map(x => x.status);
       const values = (data.charts.visits || []).map(x => Number(x.cnt || 0));
-
       upsertChart('dashChartVisitStatus', 'bar', labels, values, {
         plugins: { legend: { display: false } }
-      }, {
-        backgroundColor: GOLD
-      });
+      }, { backgroundColor: GOLD });
     }
 
     const t = new Date((data.ts || Date.now()/1000) * 1000);

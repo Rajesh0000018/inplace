@@ -128,7 +128,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <button class="btn-login" type="submit">Sign In with University SSO →</button>
       </form>
 
-      <!-- TIP REMOVED (you asked to hide it) -->
+ 
     </div>
   </div>
 </div>
