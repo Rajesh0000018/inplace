@@ -14,10 +14,29 @@ $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND i
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
+// ===== GET ASSIGNED TUTORS (from student's placements) =====
+$stmt = $pdo->prepare("
+    SELECT 
+        u.id,
+        u.full_name,
+        u.email,
+        u.role,
+        COUNT(DISTINCT p.id) as placement_count,
+        GROUP_CONCAT(DISTINCT p.role_title ORDER BY p.role_title SEPARATOR ' • ') as placement_roles,
+        GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ' • ') as companies
+    FROM placements p
+    JOIN users u ON p.tutor_id = u.id
+    LEFT JOIN companies c ON p.company_id = c.id
+    WHERE p.student_id = ?
+    AND p.tutor_id IS NOT NULL
+    GROUP BY u.id, u.full_name, u.email, u.role
+    ORDER BY u.full_name ASC
+");
+$stmt->execute([$userId]);
+$assignedTutors = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 /**
  * Auto-detect column names in `messages` table
- * - time column: created_at / sent_at / timestamp / date_sent / uploaded_at ...
- * - text column: body / message / content / text ...
  */
 function pickExistingColumn(PDO $pdo, string $table, array $candidates): ?string {
     $stmt = $pdo->prepare("
@@ -30,7 +49,6 @@ function pickExistingColumn(PDO $pdo, string $table, array $candidates): ?string
     $stmt->execute(array_merge([$table], $candidates));
     $found = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
-    // return the first candidate in the preferred order that exists
     foreach ($candidates as $c) {
         if (in_array($c, $found, true)) return $c;
     }
@@ -45,17 +63,10 @@ $textCol = pickExistingColumn($pdo, 'messages', [
     'body', 'message', 'content', 'text'
 ]);
 
-if (!$timeCol) {
-    // last resort: use id ordering only (works even without any datetime column)
-    $timeCol = 'id';
-}
-if (!$textCol) {
-    // if you REALLY don't have a text col, set something safe to avoid crashing
-    $textCol = 'id';
-}
-// ------------------------------
-// 1) Conversations list (FIX: use ? placeholders, not repeated :me)
-// ------------------------------
+if (!$timeCol) $timeCol = 'id';
+if (!$textCol) $textCol = 'id';
+
+// Conversations list
 $sqlConvos = "
     SELECT
         t.other_id,
@@ -88,7 +99,6 @@ $sqlConvos = "
 ";
 
 $stmt = $pdo->prepare($sqlConvos);
-// IMPORTANT: pass $userId 4 times in the same order as the ? placeholders
 $stmt->execute([$userId, $userId, $userId, $userId]);
 $conversations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -106,9 +116,7 @@ if ($withId > 0) {
     $chatUser = $stmt->fetch(PDO::FETCH_ASSOC);
 }
 
-// ------------------------------
-// 2) Send message
-// ------------------------------
+// Send message
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
     $toId = (int)($_POST['to_id'] ?? 0);
@@ -117,7 +125,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
     if ($toId <= 0 || $body === '') {
         $error = "Please type a message.";
     } else {
-        // Build insert depending on whether time column exists (if $timeCol == 'id', it's not a real time column)
         $hasRealTime = ($timeCol !== 'id');
 
         if ($hasRealTime) {
@@ -127,7 +134,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
             ");
             $stmt->execute([$userId, $toId, $body]);
         } else {
-            // no time column, insert without it
             $stmt = $pdo->prepare("
                 INSERT INTO messages (sender_id, receiver_id, `$textCol`, is_read)
                 VALUES (?, ?, ?, 0)
@@ -140,9 +146,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
     }
 }
 
-// ------------------------------
-// 3) Load thread + mark read
-// ------------------------------
+// Load thread + mark read
 $thread = [];
 if ($chatUser) {
     $stmt = $pdo->prepare("
@@ -167,15 +171,108 @@ if ($chatUser) {
 
 function timeLabel($val) {
     if ($val === null || $val === '') return '';
-    // If val is numeric (id fallback), show blank
     if (is_numeric($val)) return '';
     $ts = strtotime($val);
     if (!$ts) return '';
     return date('g:i A', $ts);
 }
 
+function initials($name) {
+    $parts = preg_split('/\s+/', trim((string)$name));
+    $a = strtoupper(substr($parts[0] ?? 'U', 0, 1));
+    $b = strtoupper(substr($parts[1] ?? '', 0, 1));
+    return $a . ($b ?: $a);
+}
 ?>
 <?php include '../includes/header.php'; ?>
+
+<!-- NEW MESSAGE MODAL - Only Assigned Tutors -->
+<div id="newMessageModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); 
+                                  z-index:9999; align-items:center; justify-content:center;">
+  <div style="background:white; border-radius:16px; width:90%; max-width:600px; 
+              max-height:80vh; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+    
+    <!-- Modal Header -->
+    <div style="padding:1.5rem 2rem; border-bottom:1px solid var(--border); display:flex; 
+                align-items:center; justify-content:space-between;">
+      <h3 style="font-family:'Playfair Display',serif; font-size:1.375rem; color:var(--navy);">
+        📨 Message Your Tutor
+      </h3>
+      <button onclick="closeNewMessageModal()" 
+              style="width:32px; height:32px; border:none; background:var(--cream); 
+                     border-radius:8px; cursor:pointer; font-size:1.25rem; color:var(--muted);">
+        ×
+      </button>
+    </div>
+
+    <!-- Search Box -->
+    <div style="padding:1rem 2rem; border-bottom:1px solid var(--border);">
+      <input type="text" id="tutorSearch" placeholder="🔍 Search tutors..." 
+             onkeyup="filterTutors()"
+             style="width:100%; padding:0.75rem 1rem; border:2px solid var(--border); 
+                    border-radius:10px; font-family:inherit; font-size:0.9375rem;">
+    </div>
+
+    <!-- Tutor List -->
+    <div id="tutorList" style="flex:1; overflow-y:auto; padding:0.5rem;">
+      <?php if (empty($assignedTutors)): ?>
+        <div style="text-align:center; padding:3rem 2rem; color:var(--muted);">
+          <div style="font-size:2.5rem; margin-bottom:1rem;">👨‍🏫</div>
+          <h4 style="color:var(--navy); margin-bottom:0.5rem;">No Tutors Assigned</h4>
+          <p style="font-size:0.875rem;">You don't have any tutors assigned to your placements yet.</p>
+        </div>
+      <?php else: ?>
+        <?php foreach ($assignedTutors as $t): ?>
+          <div class="tutor-item" 
+               data-name="<?= htmlspecialchars(strtolower($t['full_name'])) ?>" 
+               data-companies="<?= htmlspecialchars(strtolower($t['companies'] ?? '')) ?>"
+               onclick="startConversation(<?= (int)$t['id'] ?>)"
+               style="display:flex; align-items:center; gap:1rem; padding:1rem 1.5rem; 
+                      cursor:pointer; border-radius:12px; transition:all 0.2s; margin:0.25rem 0;">
+            
+            <!-- Avatar -->
+            <div style="width:44px; height:44px; border-radius:12px; 
+                        background:#8b5cf6; color:white; 
+                        display:flex; align-items:center; justify-content:center; 
+                        font-weight:700; font-size:0.875rem; flex-shrink:0;">
+              <?= htmlspecialchars(initials($t['full_name'])) ?>
+            </div>
+
+            <!-- Info -->
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:600; color:var(--navy); font-size:0.9375rem;">
+                <?= htmlspecialchars($t['full_name']) ?>
+                <?php if ($t['placement_count'] > 1): ?>
+                  <span style="font-size:0.75rem; color:var(--muted); font-weight:400;">
+                    (<?= $t['placement_count'] ?> placements)
+                  </span>
+                <?php endif; ?>
+              </div>
+              <div style="font-size:0.8125rem; color:var(--muted); margin-top:0.125rem;">
+                <?= htmlspecialchars($t['email']) ?>
+              </div>
+              <?php if ($t['companies']): ?>
+                <div style="font-size:0.75rem; color:var(--muted); margin-top:0.25rem;">
+                  📍 <?= htmlspecialchars($t['placement_roles']) ?>
+                </div>
+                <div style="font-size:0.75rem; color:var(--muted); margin-top:0.125rem;">
+                  🏢 <?= htmlspecialchars($t['companies']) ?>
+                </div>
+              <?php endif; ?>
+            </div>
+
+            <!-- Tutor Badge -->
+            <span style="padding:0.25rem 0.75rem; border-radius:50px; font-size:0.75rem; 
+                         font-weight:600; background:#8b5cf620; color:#8b5cf6; white-space:nowrap;">
+              👨‍🏫 Tutor
+            </span>
+          </div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+    </div>
+
+  </div>
+</div>
 
 <div class="main">
     <?php include '../includes/topbar.php'; ?>
@@ -193,15 +290,25 @@ function timeLabel($val) {
 
             <!-- LEFT -->
             <div class="panel">
-                <div class="panel-header">
+                <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
                     <h3>Conversations</h3>
+                    <?php if (!empty($assignedTutors)): ?>
+                      <button onclick="openNewMessageModal()" class="btn btn-primary btn-sm">
+                        ➕ New
+                      </button>
+                    <?php endif; ?>
                 </div>
 
                 <div class="panel-body" style="padding:0;">
                     <?php if (empty($conversations)): ?>
                         <div style="text-align:center;padding:2.5rem 1.5rem;">
                             <div style="font-size:2.25rem;margin-bottom:0.5rem;">💬</div>
-                            <p style="color:var(--muted);">No conversations yet.</p>
+                            <p style="color:var(--muted); margin-bottom:1rem;">No conversations yet.</p>
+                            <?php if (!empty($assignedTutors)): ?>
+                              <button onclick="openNewMessageModal()" class="btn btn-primary">
+                                Message Your Tutor
+                              </button>
+                            <?php endif; ?>
                         </div>
                     <?php else: ?>
                         <?php foreach ($conversations as $c): ?>
@@ -217,12 +324,7 @@ function timeLabel($val) {
                                             background:var(--navy);color:white;
                                             display:flex;align-items:center;justify-content:center;
                                             font-weight:700;font-size:0.8rem;">
-                                    <?php
-                                        $parts = preg_split('/\s+/', trim($c['other_name']));
-                                        $a = strtoupper(substr($parts[0] ?? 'U', 0, 1));
-                                        $b = strtoupper(substr($parts[1] ?? '', 0, 1));
-                                        echo $a . ($b ?: $a);
-                                    ?>
+                                    <?= htmlspecialchars(initials($c['other_name'])) ?>
                                 </div>
 
                                 <div style="flex:1;min-width:0;">
@@ -264,12 +366,7 @@ function timeLabel($val) {
                     <?php if ($chatUser): ?>
                         <div style="width:42px;height:42px;border-radius:14px;background:var(--navy);color:white;
                                     display:flex;align-items:center;justify-content:center;font-weight:700;">
-                            <?php
-                                $parts = preg_split('/\s+/', trim($chatUser['full_name']));
-                                $a = strtoupper(substr($parts[0] ?? 'U', 0, 1));
-                                $b = strtoupper(substr($parts[1] ?? '', 0, 1));
-                                echo $a . ($b ?: $a);
-                            ?>
+                            <?= htmlspecialchars(initials($chatUser['full_name'])) ?>
                         </div>
                         <div>
                             <div style="font-weight:700;"><?= htmlspecialchars($chatUser['full_name']) ?></div>
@@ -285,7 +382,14 @@ function timeLabel($val) {
                 <div style="flex:1; padding:1.25rem; overflow:auto;">
                     <?php if (!$chatUser): ?>
                         <div style="text-align:center;padding:3rem 1rem;color:var(--muted);">
-                            Choose a conversation from the left.
+                            Choose a conversation from the left
+                            <?php if (!empty($assignedTutors)): ?>
+                              <br>or
+                              <button onclick="openNewMessageModal()" class="btn btn-primary btn-sm" 
+                                      style="margin-top:1rem;">
+                                Message Your Tutor
+                              </button>
+                            <?php endif; ?>
                         </div>
                     <?php elseif (empty($thread)): ?>
                         <div style="text-align:center;padding:3rem 1rem;color:var(--muted);">
@@ -331,5 +435,55 @@ function timeLabel($val) {
         </div>
     </div>
 </div>
+
+<script>
+// Modal Functions
+function openNewMessageModal() {
+  document.getElementById('newMessageModal').style.display = 'flex';
+  document.getElementById('tutorSearch').value = '';
+  document.getElementById('tutorSearch').focus();
+  filterTutors(); // Show all
+}
+
+function closeNewMessageModal() {
+  document.getElementById('newMessageModal').style.display = 'none';
+}
+
+function filterTutors() {
+  const search = document.getElementById('tutorSearch').value.toLowerCase();
+  const items = document.querySelectorAll('.tutor-item');
+  
+  items.forEach(item => {
+    const name = item.getAttribute('data-name');
+    const companies = item.getAttribute('data-companies');
+    const matches = name.includes(search) || companies.includes(search);
+    item.style.display = matches ? 'flex' : 'none';
+  });
+}
+
+function startConversation(tutorId) {
+  window.location.href = `/inplace/student/messages.php?with=${tutorId}`;
+}
+
+// Hover effect for tutor items
+document.addEventListener('DOMContentLoaded', () => {
+  const items = document.querySelectorAll('.tutor-item');
+  items.forEach(item => {
+    item.addEventListener('mouseenter', () => {
+      item.style.background = 'var(--cream)';
+    });
+    item.addEventListener('mouseleave', () => {
+      item.style.background = 'transparent';
+    });
+  });
+});
+
+// Close modal when clicking outside
+document.getElementById('newMessageModal').addEventListener('click', (e) => {
+  if (e.target.id === 'newMessageModal') {
+    closeNewMessageModal();
+  }
+});
+</script>
 
 <?php include '../includes/footer.php'; ?>

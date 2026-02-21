@@ -9,7 +9,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>InPlace — <?= htmlspecialchars($pageTitle ?? 'Dashboard') ?></title>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/inplace/assets/css/style.css">
+  <link rel="stylesheet" href="/inplace/assets/css/style.css?v=<?= time() ?>">
 </head>
 <body>
 
