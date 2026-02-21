@@ -133,29 +133,41 @@
     ══════════════════════════════════ -->
     <?php elseif (authRole() === 'admin'): ?>
 
-      <a href="/inplace/admin/dashboard.php"
-         class="nav-item <?= ($activePage === 'dashboard') ? 'active' : '' ?>">
-        <span class="nav-icon">🏠</span> Dashboard
-      </a>
+  <?php
+    // Pending registration count
+    $stmt = $pdo->query("SELECT COUNT(*) FROM users WHERE approval_status = 'pending'");
+    $pendingApprovals = (int)$stmt->fetchColumn();
+  ?>
 
-      <a href="/inplace/admin/users.php"
-         class="nav-item <?= ($activePage === 'users') ? 'active' : '' ?>">
-        <span class="nav-icon">👥</span> Manage Users
-      </a>
+  <a href="/inplace/admin/dashboard.php"
+     class="nav-item <?= ($activePage === 'dashboard') ? 'active' : '' ?>">
+    <span class="nav-icon">🏠</span> Dashboard
+  </a>
 
-      <a href="/inplace/admin/placements.php"
-         class="nav-item <?= ($activePage === 'placements') ? 'active' : '' ?>">
-        <span class="nav-icon">🏢</span> All Placements
-      </a>
-
-      <a href="/inplace/admin/settings.php"
-         class="nav-item <?= ($activePage === 'settings') ? 'active' : '' ?>">
-        <span class="nav-icon">⚙️</span> Settings
-      </a>
-
+  <a href="/inplace/admin/approve-registrations.php"
+     class="nav-item <?= ($activePage === 'approve_registrations') ? 'active' : '' ?>">
+    <span class="nav-icon">📝</span> Registration Approvals
+    <?php if ($pendingApprovals > 0): ?>
+      <span class="nav-badge"><?= $pendingApprovals ?></span>
     <?php endif; ?>
+  </a>
 
-  </nav>
+  <a href="/inplace/admin/users.php"
+     class="nav-item <?= ($activePage === 'users') ? 'active' : '' ?>">
+    <span class="nav-icon">👥</span> Manage Users
+  </a>
+
+  <a href="/inplace/admin/placements.php"
+     class="nav-item <?= ($activePage === 'placements') ? 'active' : '' ?>">
+    <span class="nav-icon">🏢</span> All Placements
+  </a>
+
+  <a href="/inplace/admin/settings.php"
+     class="nav-item <?= ($activePage === 'settings') ? 'active' : '' ?>">
+    <span class="nav-icon">⚙️</span> Settings
+  </a>
+
+<?php endif; ?>
 
   <!-- ── Sidebar Footer: User Info + Logout ── -->
   <div class="sidebar-footer">
