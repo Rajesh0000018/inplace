@@ -110,14 +110,12 @@ function sendCalendarInvite($visit, $organizer, $attendees) {
     $mail->Debugoutput = function($str, $level) {
         error_log("PHPMailer: $str");
     };
-        // Server settings
-     // Server settings - GMAIL
-// Server settings - GMAIL
+    
 $mail->isSMTP();
 $mail->Host       = 'smtp.gmail.com';
 $mail->SMTPAuth   = true;
 $mail->Username   = 'kelothchinna2@gmail.com';
-$mail->Password   = 'ifgc gdca rihr qmvo';  // ✅ FIXED: No spaces!
+$mail->Password   = 'ifgc gdca rihr qmvo';  
 $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
 $mail->Port       = 587;
 
