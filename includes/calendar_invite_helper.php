@@ -116,13 +116,12 @@ function sendCalendarInvite($visit, $organizer, $attendees) {
 $mail->isSMTP();
 $mail->Host       = 'smtp.gmail.com';
 $mail->SMTPAuth   = true;
-$mail->Username   = 'prajwalsk53@gmail.com';
-$mail->Password   = 'kzsazygadvgppvas';  // ✅ FIXED: No spaces!
+$mail->Username   = 'kelothchinna2@gmail.com';
+$mail->Password   = 'ifgc gdca rihr qmvo';  // ✅ FIXED: No spaces!
 $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
 $mail->Port       = 587;
 
-// Sender (MUST match Gmail username!)
-    //$mail->setFrom('prajwalsk53@gmail.com', $organizer['name']); 
+
 
         
         // Sender (organizer)
