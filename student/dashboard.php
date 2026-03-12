@@ -4,19 +4,19 @@ require_once '../config/db.php';
 
 requireAuth('student');   // redirects away if not logged in as student
 
-// ── Page variables ───────────────────────────────────────────────
+// ── Page variables 
 $pageTitle    = 'Dashboard';
 $pageSubtitle = 'Welcome back, ' . explode(' ', authName())[0];
 $activePage   = 'dashboard';
 
 $userId = authId();   // use this everywhere instead of $_SESSION['user_id']
 
-// ── Unread messages ──────────────────────────────────────────────
+// ── Unread messages 
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND is_read = 0");
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
-// ── Active placement ─────────────────────────────────────────────
+// ── Active placement 
 $stmt = $pdo->prepare("
     SELECT p.*, c.name AS company_name, c.city
     FROM placements p
@@ -27,9 +27,9 @@ $stmt = $pdo->prepare("
 $stmt->execute([$userId]);
 $placement = $stmt->fetch();
 
-// ... rest of your queries using $userId instead of $_SESSION['user_id']
+// rest of your queries using $userId instead of $_SESSION['user_id']
 
-// ── Reports submitted count ──────────────────────────────────────
+// Reports submitted count 
 $stmt = $pdo->prepare("
     SELECT COUNT(*) FROM documents
     WHERE uploaded_by = ? AND doc_type IN ('interim_report','final_report')
@@ -37,7 +37,7 @@ $stmt = $pdo->prepare("
 $stmt->execute([$userId]);
 $reportCount = (int)$stmt->fetchColumn();
 
-// ── Next upcoming confirmed visit ────────────────────────────────
+//  Next upcoming confirmed visit 
 $stmt = $pdo->prepare("
     SELECT v.visit_date, v.visit_time, v.type, v.location, v.meeting_link
     FROM visits v
@@ -50,7 +50,7 @@ $stmt = $pdo->prepare("
 $stmt->execute([$userId]);
 $nextVisit = $stmt->fetch();
 
-// ── Latest placement request + its current status ────────────────
+// ── Latest placement request + its current status 
 $stmt = $pdo->prepare("
     SELECT p.status, p.created_at, c.name AS company_name
     FROM placements p
@@ -64,7 +64,7 @@ $latestRequest = $stmt->fetch();
 // ── Upcoming deadlines (report due dates — you can store in a
 //    'deadlines' table or derive from placement dates) ─────────────
 //    For now we derive: interim = 4 months after start,
-//                       final   = 1 month before end
+//                     final   = 1 month before end
 $interimDue = null;
 $finalDue   = null;
 if ($placement) {
@@ -390,7 +390,7 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
                     $today   = new DateTime();
                     $elapsed = round($start->diff($today)->days / 30, 1);
                     $total   = round($start->diff($end)->days / 30, 1);
-                    echo "{$elapsed} months completed of {$total}-month placement";
+                    echo "{$elapsed} months completed of {$total}month placement - dashboard.php:393";
                     ?>
                 </p>
             </div>
