@@ -5,8 +5,8 @@ require_once 'config/db.php';
 // ═══════════════════════════════════════════════════════
 // reCAPTCHA Configuration
 // ═══════════════════════════════════════════════════════
-define('RECAPTCHA_SITE_KEY', '6Lf7a4gsAAAAAErVVpKnDyu7m2xhLtckhgRYxCw4');  // ← CHANGE THIS
-define('RECAPTCHA_SECRET_KEY', '6Lf7a4gsAAAAAIcDYQSrmfYhSLeU4xxJQyysXufN');  // ← CHANGE THIS
+define('RECAPTCHA_SITE_KEY', '6Ld4cogsAAAAAG9o_s6-zM8Qh2FZM9ZXwXuMHLHg');  // ← CHANGE THIS
+define('RECAPTCHA_SECRET_KEY', '6Ld4cogsAAAAAKxokdWeL7-fvfJHNBNKILLSrSxE');  // ← CHANGE THIS
 
 // If already logged in, redirect to dashboard
 if (!empty($_SESSION['user'])) {
