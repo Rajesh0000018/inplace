@@ -5,8 +5,8 @@ require_once 'config/db.php';
 // ═══════════════════════════════════════════════════════
 // reCAPTCHA Configuration
 // ═══════════════════════════════════════════════════════
-define('RECAPTCHA_SITE_KEY', '6Ld4cogsAAAAAG9o_s6-zM8Qh2FZM9ZXwXuMHLHg');  // ← CHANGE THIS
-define('RECAPTCHA_SECRET_KEY', '6Ld4cogsAAAAAKxokdWeL7-fvfJHNBNKILLSrSxE');  // ← CHANGE THIS
+define('RECAPTCHA_SITE_KEY', '6Ld4cogsAAAAAG9o_s6-zM8Qh2FZM9ZXwXuMHLHg');  
+define('RECAPTCHA_SECRET_KEY', '6Ld4cogsAAAAAKxokdWeL7-fvfJHNBNKILLSrSxE');
 
 // If already logged in, redirect to dashboard
 if (!empty($_SESSION['user'])) {
@@ -300,11 +300,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             box-shadow: 0 0 0 3px rgba(232, 160, 32, 0.1);
         }
 
+        /* ⭐ Password Toggle Styling */
+        .password-wrapper {
+            position: relative;
+        }
+
+        .password-wrapper input {
+            padding-right: 3rem;
+        }
+
+        .password-toggle {
+            position: absolute;
+            right: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0.5rem;
+            color: #6b7a8d;
+            transition: color 0.3s;
+        }
+
+        .password-toggle:hover {
+            color: #0c1b33;
+        }
+
+        .password-toggle svg {
+            width: 20px;
+            height: 20px;
+            display: block;
+        }
+
         /* ⭐ reCAPTCHA Styling */
         .recaptcha-wrapper {
             margin-bottom: 1.5rem;
             display: flex;
-            justify-content: center;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* ⭐ reCAPTCHA Error Message Styling */
+        .recaptcha-error {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+            padding: 0.875rem 1rem;
+            background: #fff5f5;
+            border: 1px solid #feb2b2;
+            border-radius: 8px;
+            color: #c53030;
+            font-size: 0.875rem;
+            font-weight: 500;
+            width: 100%;
+        }
+
+        .recaptcha-error svg {
+            flex-shrink: 0;
+        }
+
+        /* Shake animation */
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
+        }
+
+        .shake {
+            animation: shake 0.5s;
         }
 
         .btn-primary {
@@ -400,18 +464,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <div class="form-group">
                     <label>Password</label>
-                    <input 
-                        type="password" 
-                        name="password" 
-                        class="form-input" 
-                        placeholder="Enter your password"
-                        required
-                    >
+                    <div class="password-wrapper">
+                        <input 
+                            type="password" 
+                            name="password" 
+                            id="passwordInput"
+                            class="form-input" 
+                            placeholder="Enter your password"
+                            required
+                        >
+                        <button type="button" class="password-toggle" onclick="togglePassword()" aria-label="Toggle password visibility">
+                            <!-- Eye Icon (Hidden) -->
+                            <svg id="eyeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                            <!-- Eye Slash Icon (Visible) -->
+                            <svg id="eyeSlashIcon" style="display:none;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                                <line x1="1" y1="1" x2="23" y2="23"></line>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
 
                 <!-- ⭐ reCAPTCHA Widget -->
                 <div class="recaptcha-wrapper">
-                    <div class="g-recaptcha" data-sitekey="<?= RECAPTCHA_SITE_KEY ?>"></div>
+                    <div class="g-recaptcha" 
+                         data-sitekey="<?= RECAPTCHA_SITE_KEY ?>"
+                         data-callback="onRecaptchaSuccess"></div>
+                    
+                    <!-- Error Message (hidden by default) -->
+                    <div id="recaptchaError" class="recaptcha-error" style="display:none;">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 13A6 6 0 118 2a6 6 0 010 12zm.93-9.412l-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.47l-.451-.081.082-.381 2.29-.287zM8 5.5a1 1 0 110-2 1 1 0 010 2z"/>
+                        </svg>
+                        Please complete the reCAPTCHA verification
+                    </div>
                 </div>
 
                 <button type="submit" class="btn-primary" id="submitBtn">
@@ -422,14 +511,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 
     <script>
-        // Optional: Disable submit button until reCAPTCHA is completed
+        // ═══════════════════════════════════════════════════════
+        // Password Toggle Functionality
+        // ═══════════════════════════════════════════════════════
+        function togglePassword() {
+            const passwordInput = document.getElementById('passwordInput');
+            const eyeIcon = document.getElementById('eyeIcon');
+            const eyeSlashIcon = document.getElementById('eyeSlashIcon');
+            
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                eyeIcon.style.display = 'none';
+                eyeSlashIcon.style.display = 'block';
+            } else {
+                passwordInput.type = 'password';
+                eyeIcon.style.display = 'block';
+                eyeSlashIcon.style.display = 'none';
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // reCAPTCHA Validation with Styled Error
+        // ═══════════════════════════════════════════════════════
         document.getElementById('loginForm').addEventListener('submit', function(e) {
             const recaptchaResponse = grecaptcha.getResponse();
+            const errorMsg = document.getElementById('recaptchaError');
+            
             if (recaptchaResponse.length === 0) {
                 e.preventDefault();
-                alert('Please complete the reCAPTCHA verification');
+                
+                // Show error message
+                errorMsg.style.display = 'flex';
+                
+                // Scroll to error
+                errorMsg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                
+                // Shake animation
+                errorMsg.classList.add('shake');
+                setTimeout(() => errorMsg.classList.remove('shake'), 500);
+            } else {
+                // Hide error if reCAPTCHA is completed
+                errorMsg.style.display = 'none';
             }
         });
+        
+        // Hide error when user checks reCAPTCHA
+        function onRecaptchaSuccess() {
+            document.getElementById('recaptchaError').style.display = 'none';
+        }
     </script>
 </body>
 </html>
