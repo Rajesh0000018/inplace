@@ -44,6 +44,16 @@ $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND i
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
+// ===== GET ALL USERS FOR "NEW MESSAGE" =====
+$stmt = $pdo->query("
+    SELECT id, full_name, email, role 
+    FROM users 
+    WHERE role IN ('student', 'provider', 'tutor', 'admin') 
+    AND approval_status = 'approved'
+    ORDER BY full_name ASC
+");
+$allUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 // ===== 1) Conversations list =====
 $sqlConvos = "
     SELECT
@@ -131,8 +141,86 @@ function isOnline($lastSeenStr, $minutes = 5) {
     if (!$ts) return false;
     return (time() - $ts) <= ($minutes * 60);
 }
+
+function getRoleBadgeColor($role) {
+    switch(strtolower($role)) {
+        case 'student': return '#0ea5e9';
+        case 'tutor': return '#8b5cf6';
+        case 'provider': return '#f59e0b';
+        case 'admin': return '#ef4444';
+        default: return '#6b7280';
+    }
+}
 ?>
 <?php include '../includes/header.php'; ?>
+
+<!-- NEW MESSAGE MODAL -->
+<div id="newMessageModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); 
+                                  z-index:9999; align-items:center; justify-content:center;">
+  <div style="background:white; border-radius:16px; width:90%; max-width:600px; 
+              max-height:80vh; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+    
+    <!-- Modal Header -->
+    <div style="padding:1.5rem 2rem; border-bottom:1px solid var(--border); display:flex; 
+                align-items:center; justify-content:space-between;">
+      <h3 style="font-family:'Playfair Display',serif; font-size:1.375rem; color:var(--navy);">
+        📨 New Message
+      </h3>
+      <button onclick="closeNewMessageModal()" 
+              style="width:32px; height:32px; border:none; background:var(--cream); 
+                     border-radius:8px; cursor:pointer; font-size:1.25rem; color:var(--muted);">
+        ×
+      </button>
+    </div>
+
+    <!-- Search Box -->
+    <div style="padding:1rem 2rem; border-bottom:1px solid var(--border);">
+      <input type="text" id="userSearch" placeholder="🔍 Search users..." 
+             onkeyup="filterUsers()"
+             style="width:100%; padding:0.75rem 1rem; border:2px solid var(--border); 
+                    border-radius:10px; font-family:inherit; font-size:0.9375rem;">
+    </div>
+
+    <!-- User List -->
+    <div id="userList" style="flex:1; overflow-y:auto; padding:0.5rem;">
+      <?php foreach ($allUsers as $u): ?>
+        <?php if ((int)$u['id'] === $userId) continue; // Skip self ?>
+        <div class="user-item" data-name="<?= htmlspecialchars(strtolower($u['full_name'])) ?>" 
+             data-role="<?= htmlspecialchars(strtolower($u['role'])) ?>"
+             onclick="startConversation(<?= (int)$u['id'] ?>)"
+             style="display:flex; align-items:center; gap:1rem; padding:1rem 1.5rem; 
+                    cursor:pointer; border-radius:12px; transition:all 0.2s; margin:0.25rem 0;">
+          
+          <!-- Avatar -->
+          <div style="width:44px; height:44px; border-radius:12px; 
+                      background:<?= getRoleBadgeColor($u['role']) ?>; color:white; 
+                      display:flex; align-items:center; justify-content:center; 
+                      font-weight:700; font-size:0.875rem; flex-shrink:0;">
+            <?= htmlspecialchars(initials($u['full_name'])) ?>
+          </div>
+
+          <!-- Info -->
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:600; color:var(--navy); font-size:0.9375rem;">
+              <?= htmlspecialchars($u['full_name']) ?>
+            </div>
+            <div style="font-size:0.8125rem; color:var(--muted); margin-top:0.125rem;">
+              <?= htmlspecialchars($u['email']) ?>
+            </div>
+          </div>
+
+          <!-- Role Badge -->
+          <span style="padding:0.25rem 0.75rem; border-radius:50px; font-size:0.75rem; 
+                       font-weight:600; background:<?= getRoleBadgeColor($u['role']) ?>20; 
+                       color:<?= getRoleBadgeColor($u['role']) ?>; white-space:nowrap;">
+            <?= htmlspecialchars(ucfirst($u['role'])) ?>
+          </span>
+        </div>
+      <?php endforeach; ?>
+    </div>
+
+  </div>
+</div>
 
 <div class="main">
   <?php include '../includes/topbar.php'; ?>
@@ -142,13 +230,21 @@ function isOnline($lastSeenStr, $minutes = 5) {
 
       <!-- LEFT: Conversations -->
       <div class="panel">
-        <div class="panel-header"><h3>Conversations</h3></div>
+        <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+          <h3>Conversations</h3>
+          <button onclick="openNewMessageModal()" class="btn btn-primary btn-sm">
+            ➕ New
+          </button>
+        </div>
 
         <div class="panel-body" style="padding:0;">
           <?php if (empty($conversations)): ?>
             <div style="text-align:center;padding:2.5rem 1.5rem;">
               <div style="font-size:2.25rem;margin-bottom:0.5rem;">💬</div>
-              <p style="color:var(--muted);">No conversations yet.</p>
+              <p style="color:var(--muted); margin-bottom:1rem;">No conversations yet.</p>
+              <button onclick="openNewMessageModal()" class="btn btn-primary">
+                Start New Conversation
+              </button>
             </div>
           <?php else: ?>
             <?php foreach ($conversations as $c): $active = ($withId === (int)$c['other_id']); ?>
@@ -164,7 +260,7 @@ function isOnline($lastSeenStr, $minutes = 5) {
                             font-weight:700;font-size:0.8rem;">
                   <?= htmlspecialchars(initials($c['other_name'])) ?>
 
-                  <!-- Unread DOT (like your HTML) -->
+                  <!-- Unread DOT -->
                   <?php if ((int)$c['unread_count'] > 0): ?>
                     <span style="position:absolute;right:-2px;top:-2px;width:10px;height:10px;
                                  border-radius:50%;background:#0ea5e9;border:2px solid white;"></span>
@@ -231,7 +327,11 @@ function isOnline($lastSeenStr, $minutes = 5) {
         <div id="chatBox" style="flex:1; padding:1.25rem; overflow:auto;">
           <?php if (!$chatUser): ?>
             <div style="text-align:center;padding:3rem 1rem;color:var(--muted);">
-              Choose a conversation from the left.
+              Choose a conversation from the left or 
+              <button onclick="openNewMessageModal()" class="btn btn-primary btn-sm" 
+                      style="margin-top:1rem;">
+                Start New Conversation
+              </button>
             </div>
           <?php elseif (empty($thread)): ?>
             <div id="emptyState" style="text-align:center;padding:3rem 1rem;color:var(--muted);">
@@ -274,6 +374,55 @@ function isOnline($lastSeenStr, $minutes = 5) {
 </div>
 
 <script>
+// Modal Functions
+function openNewMessageModal() {
+  document.getElementById('newMessageModal').style.display = 'flex';
+  document.getElementById('userSearch').value = '';
+  document.getElementById('userSearch').focus();
+  filterUsers(); // Show all
+}
+
+function closeNewMessageModal() {
+  document.getElementById('newMessageModal').style.display = 'none';
+}
+
+function filterUsers() {
+  const search = document.getElementById('userSearch').value.toLowerCase();
+  const items = document.querySelectorAll('.user-item');
+  
+  items.forEach(item => {
+    const name = item.getAttribute('data-name');
+    const role = item.getAttribute('data-role');
+    const matches = name.includes(search) || role.includes(search);
+    item.style.display = matches ? 'flex' : 'none';
+  });
+}
+
+function startConversation(userId) {
+  window.location.href = `/inplace/tutor/messages.php?with=${userId}`;
+}
+
+// Hover effect for user items
+document.addEventListener('DOMContentLoaded', () => {
+  const items = document.querySelectorAll('.user-item');
+  items.forEach(item => {
+    item.addEventListener('mouseenter', () => {
+      item.style.background = 'var(--cream)';
+    });
+    item.addEventListener('mouseleave', () => {
+      item.style.background = 'transparent';
+    });
+  });
+});
+
+// Close modal when clicking outside
+document.getElementById('newMessageModal').addEventListener('click', (e) => {
+  if (e.target.id === 'newMessageModal') {
+    closeNewMessageModal();
+  }
+});
+
+// Message functionality (existing code)
 (function(){
   const chatBox = document.getElementById('chatBox');
   const sendForm = document.getElementById('sendForm');

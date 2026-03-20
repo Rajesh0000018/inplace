@@ -2,7 +2,7 @@
 require_once '../includes/auth.php';
 require_once '../config/db.php';
 
-requireAuth('student');   // ← correct function name
+requireAuth('student');
 
 $pageTitle    = 'Submit Request';
 $pageSubtitle = 'New Placement Authorisation Request';
@@ -17,29 +17,149 @@ $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND i
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
+// ----------------------
+// Helper: UK postcode -> lat/lng (postcodes.io)
+// ----------------------
+function normaliseUkPostcode(string $pc): string {
+    $pc = strtoupper(trim($pc));
+    $pc = preg_replace('/\s+/', '', $pc);
+    if (strlen($pc) > 3) {
+        $pc = substr($pc, 0, -3) . ' ' . substr($pc, -3);
+    }
+    return trim($pc);
+}
+
+function httpGetJson(string $url): ?array {
+    // Try file_get_contents first
+    $ctx = stream_context_create([
+        'http' => [
+            'method'  => 'GET',
+            'timeout' => 8,
+            'header'  => "User-Agent: inplace\r\n"
+        ]
+    ]);
+    $raw = @file_get_contents($url, false, $ctx);
+    if ($raw !== false) {
+        $json = json_decode($raw, true);
+        return is_array($json) ? $json : null;
+    }
+
+    // Fallback to cURL (works even if allow_url_fopen disabled)
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 8,
+            CURLOPT_USERAGENT      => 'inplace',
+        ]);
+        $raw2 = curl_exec($ch);
+        curl_close($ch);
+
+        if ($raw2 !== false) {
+            $json = json_decode($raw2, true);
+            return is_array($json) ? $json : null;
+        }
+    }
+
+    return null;
+}
+
+function geocodeUkPostcode(?string $postcode): array {
+    $postcode = trim((string)$postcode);
+    if ($postcode === '') return [null, null, null];
+
+    $pc = normaliseUkPostcode($postcode);
+
+    $data = httpGetJson("https://api.postcodes.io/postcodes/" . urlencode($pc));
+    if (!$data || ($data['status'] ?? 0) !== 200 || empty($data['result'])) {
+        return [null, null, $pc]; // keep postcode, but no lat/lng
+    }
+
+    $lat = $data['result']['latitude'] ?? null;
+    $lng = $data['result']['longitude'] ?? null;
+
+    return [$lat, $lng, $pc];
+}
+
 // ── Handle form submission ────────────────────────────────────────
 $success = '';
 $error   = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
-        // 1. Insert or find company
-        $stmt = $pdo->prepare("
-            INSERT INTO companies (name, address, city, sector, contact_name, contact_email, contact_phone)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ");
-        $stmt->execute([
-            trim($_POST['company_name']    ?? ''),
-            trim($_POST['company_address'] ?? ''),
-            trim($_POST['company_city']    ?? ''),
-            trim($_POST['sector']          ?? ''),
-            trim($_POST['supervisor_name'] ?? ''),
-            trim($_POST['supervisor_email']?? ''),
-            trim($_POST['supervisor_phone']?? ''),
-        ]);
-        $companyId = $pdo->lastInsertId();
+        $pdo->beginTransaction();
 
-        // 2. Insert placement
+        // POST values
+        $companyName    = trim($_POST['company_name'] ?? '');
+        $companyAddress = trim($_POST['company_address'] ?? '');
+        $companyCity    = trim($_POST['company_city'] ?? '');
+        $companyPostcode= trim($_POST['company_postcode'] ?? '');
+        $sector         = trim($_POST['sector'] ?? '');
+
+        $supName  = trim($_POST['supervisor_name'] ?? '');
+        $supEmail = trim($_POST['supervisor_email'] ?? '');
+        $supPhone = trim($_POST['supervisor_phone'] ?? '');
+
+        // ✅ Get lat/lng from postcode (UK)
+        [$lat, $lng, $pcNormalised] = geocodeUkPostcode($companyPostcode);
+
+        // 1) Insert OR find company (avoid duplicates by name+postcode)
+        //    If exists, reuse it, and update lat/lng if empty.
+        $stmt = $pdo->prepare("
+            SELECT id, latitude, longitude
+            FROM companies
+            WHERE name = ? AND COALESCE(postcode,'') = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$companyName, $pcNormalised ?? '']);
+        $existingCompany = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($existingCompany) {
+            $companyId = (int)$existingCompany['id'];
+
+            // update details (and lat/lng if we got values)
+            $stmt = $pdo->prepare("
+                UPDATE companies
+                SET address = ?, city = ?, postcode = ?, sector = ?,
+                    contact_name = ?, contact_email = ?, contact_phone = ?,
+                    latitude = COALESCE(?, latitude),
+                    longitude = COALESCE(?, longitude)
+                WHERE id = ?
+            ");
+            $stmt->execute([
+                $companyAddress,
+                $companyCity,
+                $pcNormalised,
+                $sector,
+                $supName,
+                $supEmail,
+                $supPhone,
+                $lat,
+                $lng,
+                $companyId
+            ]);
+        } else {
+            // insert new company (includes postcode + lat/lng)
+            $stmt = $pdo->prepare("
+                INSERT INTO companies (name, address, city, postcode, sector, contact_name, contact_email, contact_phone, latitude, longitude)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ");
+            $stmt->execute([
+                $companyName,
+                $companyAddress,
+                $companyCity,
+                $pcNormalised,
+                $sector,
+                $supName,
+                $supEmail,
+                $supPhone,
+                $lat,
+                $lng
+            ]);
+            $companyId = (int)$pdo->lastInsertId();
+        }
+
+        // 2) Insert placement
         $stmt = $pdo->prepare("
             INSERT INTO placements
                 (student_id, company_id, role_title, job_description,
@@ -50,25 +170,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([
             $userId,
             $companyId,
-            trim($_POST['role_title']       ?? ''),
-            trim($_POST['job_description']  ?? ''),
-            $_POST['start_date']            ?? '',
-            $_POST['end_date']              ?? '',
-            trim($_POST['salary']           ?? ''),
-            trim($_POST['working_pattern']  ?? ''),
-            trim($_POST['supervisor_name']  ?? ''),
-            trim($_POST['supervisor_email'] ?? ''),
-            trim($_POST['supervisor_phone'] ?? ''),
+            trim($_POST['role_title']      ?? ''),
+            trim($_POST['job_description'] ?? ''),
+            $_POST['start_date']           ?? '',
+            $_POST['end_date']             ?? '',
+            trim($_POST['salary']          ?? ''),
+            trim($_POST['working_pattern'] ?? ''),
+            $supName,
+            $supEmail,
+            $supPhone,
         ]);
-        $placementId = $pdo->lastInsertId();
+        $placementId = (int)$pdo->lastInsertId();
 
-        // 3. Handle file uploads
+        // 3) Handle file uploads
         if (!empty($_FILES['documents']['name'][0])) {
             foreach ($_FILES['documents']['tmp_name'] as $i => $tmp) {
                 if (!$tmp) continue;
+
                 $original = $_FILES['documents']['name'][$i];
                 $safe     = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $original);
                 $dest     = '../assets/uploads/' . $safe;
+
                 if (move_uploaded_file($tmp, $dest)) {
                     $stmt = $pdo->prepare("
                         INSERT INTO documents
@@ -81,16 +203,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // 4. Audit log
+        // 4) Audit log
         $stmt = $pdo->prepare("
             INSERT INTO audit_log (user_id, action, table_affected, record_id, ip_address)
             VALUES (?, 'submitted_placement_request', 'placements', ?, ?)
         ");
         $stmt->execute([$userId, $placementId, $_SERVER['REMOTE_ADDR'] ?? '']);
 
+        $pdo->commit();
+
         $success = "Your placement request has been submitted successfully! The placement provider will be notified to confirm the details.";
 
     } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = "Something went wrong. Please try again. (" . $e->getMessage() . ")";
     }
 }
@@ -103,8 +228,9 @@ $stmt = $pdo->prepare("
     ORDER BY created_at DESC LIMIT 1
 ");
 $stmt->execute([$userId]);
-$existingPlacement = $stmt->fetch();
+$existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
 ?>
+
 <?php include '../includes/header.php'; ?>
 
 <div class="main">
@@ -113,7 +239,6 @@ $existingPlacement = $stmt->fetch();
     <div class="page-content">
 
         <?php if ($success): ?>
-        <!-- ── Success Banner ─────────────────────────────────── -->
         <div style="background:var(--success-bg);border:1px solid #6ee7b7;border-radius:var(--radius);
                     padding:1.5rem 2rem;margin-bottom:2rem;display:flex;align-items:center;gap:1rem;">
             <span style="font-size:1.75rem;">🎉</span>
@@ -135,7 +260,6 @@ $existingPlacement = $stmt->fetch();
         <?php endif; ?>
 
         <?php if ($existingPlacement && !in_array($existingPlacement['status'], ['rejected','terminated'])): ?>
-        <!-- ── Warning: already has placement ────────────────── -->
         <div style="background:var(--warning-bg);border:1px solid #fcd34d;border-radius:var(--radius);
                     padding:1.25rem 2rem;margin-bottom:2rem;display:flex;align-items:center;gap:1rem;">
             <span style="font-size:1.5rem;">⚠️</span>
@@ -149,10 +273,6 @@ $existingPlacement = $stmt->fetch();
         </div>
         <?php endif; ?>
 
-
-        <!-- ═══════════════════════════════════════════════════════
-             MAIN FORM PANEL
-        ════════════════════════════════════════════════════════ -->
         <div class="panel">
             <div class="panel-header">
                 <div>
@@ -165,7 +285,7 @@ $existingPlacement = $stmt->fetch();
             <div class="panel-body">
                 <form method="POST" enctype="multipart/form-data">
 
-                    <!-- ── SECTION 1: Company & Role ─────────── -->
+                    <!-- SECTION 1 -->
                     <div style="font-size:0.8125rem;font-weight:700;text-transform:uppercase;
                                 letter-spacing:0.08em;color:var(--muted);margin-bottom:1.25rem;
                                 padding-bottom:0.75rem;border-bottom:2px solid var(--border);">
@@ -179,6 +299,14 @@ $existingPlacement = $stmt->fetch();
                             <input type="text" name="company_name" required
                                    placeholder="e.g., Rolls-Royce plc"
                                    value="<?= htmlspecialchars($_POST['company_name'] ?? '') ?>">
+                        </div>
+
+                        <div class="form-group">
+                            <label>UK Postcode <span style="color:var(--danger);">*</span></label>
+                            <input type="text" name="company_postcode" required
+                                   placeholder="e.g., LE1 7RH"
+                                   value="<?= htmlspecialchars($_POST['company_postcode'] ?? '') ?>">
+                            <small style="color:var(--muted);">We use this to save latitude/longitude for navigation.</small>
                         </div>
 
                         <div class="form-group">
@@ -214,7 +342,7 @@ $existingPlacement = $stmt->fetch();
                                 ];
                                 foreach ($sectors as $s) {
                                     $sel = (($_POST['sector'] ?? '') === $s) ? 'selected' : '';
-                                    echo "<option value=\"$s\" $sel>" . htmlspecialchars($s) . "</option>";
+                                    echo "<option value=\"" . htmlspecialchars($s) . "\" $sel>" . htmlspecialchars($s) . "</option>";
                                 }
                                 ?>
                             </select>
@@ -235,8 +363,7 @@ $existingPlacement = $stmt->fetch();
 
                     </div>
 
-
-                    <!-- ── SECTION 2: Placement Dates & Salary ── -->
+                    <!-- SECTION 2 -->
                     <div style="font-size:0.8125rem;font-weight:700;text-transform:uppercase;
                                 letter-spacing:0.08em;color:var(--muted);margin-bottom:1.25rem;
                                 padding-bottom:0.75rem;border-bottom:2px solid var(--border);">
@@ -267,18 +394,26 @@ $existingPlacement = $stmt->fetch();
                         <div class="form-group">
                             <label>Working Pattern</label>
                             <select name="working_pattern">
-                                <option value="Full-time (37.5 hrs/week)">Full-time (37.5 hrs/week)</option>
-                                <option value="Full-time (40 hrs/week)">Full-time (40 hrs/week)</option>
-                                <option value="Hybrid">Hybrid (office + remote)</option>
-                                <option value="Remote">Fully Remote</option>
-                                <option value="Part-time">Part-time</option>
+                                <?php
+                                $patterns = [
+                                    "Full-time (37.5 hrs/week)",
+                                    "Full-time (40 hrs/week)",
+                                    "Hybrid",
+                                    "Remote",
+                                    "Part-time"
+                                ];
+                                $cur = $_POST['working_pattern'] ?? "Full-time (37.5 hrs/week)";
+                                foreach ($patterns as $p) {
+                                    $sel = ($cur === $p) ? 'selected' : '';
+                                    echo "<option value=\"" . htmlspecialchars($p) . "\" $sel>" . htmlspecialchars($p) . "</option>";
+                                }
+                                ?>
                             </select>
                         </div>
 
                     </div>
 
-
-                    <!-- ── SECTION 3: Supervisor Details ────────── -->
+                    <!-- SECTION 3 -->
                     <div style="font-size:0.8125rem;font-weight:700;text-transform:uppercase;
                                 letter-spacing:0.08em;color:var(--muted);margin-bottom:1.25rem;
                                 padding-bottom:0.75rem;border-bottom:2px solid var(--border);">
@@ -317,8 +452,7 @@ $existingPlacement = $stmt->fetch();
 
                     </div>
 
-
-                    <!-- ── SECTION 4: Documents ──────────────────── -->
+                    <!-- SECTION 4 -->
                     <div style="font-size:0.8125rem;font-weight:700;text-transform:uppercase;
                                 letter-spacing:0.08em;color:var(--muted);margin-bottom:1.25rem;
                                 padding-bottom:0.75rem;border-bottom:2px solid var(--border);">
@@ -342,27 +476,19 @@ $existingPlacement = $stmt->fetch();
                         <div id="fileList" style="margin-top:0.875rem;display:flex;flex-direction:column;gap:0.5rem;"></div>
                     </div>
 
-
-                    <!-- ── Form Actions ───────────────────────────── -->
                     <div class="divider"></div>
                     <div style="display:flex;justify-content:flex-end;gap:1rem;margin-top:1.5rem;">
-                        <a href="/inplace/student/dashboard.php" class="btn btn-ghost">
-                            ← Back
-                        </a>
-                        <button type="submit" name="action" value="draft" class="btn btn-ghost">
-                            Save as Draft
-                        </button>
-                        <button type="submit" class="btn btn-primary">
-                            Submit Request →
-                        </button>
+                        <a href="/inplace/student/dashboard.php" class="btn btn-ghost">← Back</a>
+                        <button type="submit" name="action" value="draft" class="btn btn-ghost">Save as Draft</button>
+                        <button type="submit" class="btn btn-primary">Submit Request →</button>
                     </div>
 
                 </form>
-            </div><!-- /panel-body -->
-        </div><!-- /panel -->
+            </div>
+        </div>
 
-    </div><!-- /page-content -->
-</div><!-- /main -->
+    </div>
+</div>
 
 <script>
 // Show selected file names under the upload zone
@@ -371,13 +497,22 @@ function showFiles(input) {
     list.innerHTML = '';
     Array.from(input.files).forEach(f => {
         const div = document.createElement('div');
-        div.style.cssText = 'display:flex;align-items:center;gap:0.75rem;padding:0.75rem 1rem;' +
-                            'background:var(--success-bg);border-radius:8px;border:1px solid #6ee7b7;';
-        div.innerHTML = `<span style="font-size:1.25rem;">📄</span>
-                         <span style="font-size:0.875rem;font-weight:500;color:var(--success);">${f.name}</span>
-                         <span style="font-size:0.8125rem;color:var(--muted);margin-left:auto;">${(f.size/1024).toFixed(0)} KB</span>`;
+        div.style.cssText =
+            'display:flex;align-items:center;gap:0.75rem;padding:0.75rem 1rem;' +
+            'background:var(--success-bg);border-radius:8px;border:1px solid #6ee7b7;';
+        div.innerHTML = `
+            <span style="font-size:1.25rem;">📄</span>
+            <span style="font-size:0.875rem;font-weight:500;color:var(--success);">${escapeHtml(f.name)}</span>
+            <span style="font-size:0.8125rem;color:var(--muted);margin-left:auto;">${(f.size/1024).toFixed(0)} KB</span>
+        `;
         list.appendChild(div);
     });
+}
+
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, s => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[s]));
 }
 
 // Drag and drop support

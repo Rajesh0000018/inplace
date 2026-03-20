@@ -1,4 +1,6 @@
 <?php
+error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
+ini_set('display_errors', '0');
 define('DB_HOST', 'inplace.cqvq8wu4spwq.us-east-1.rds.amazonaws.com');
 define('DB_USER', 'admin');
 define('DB_PASS', 'Chinna!0712');

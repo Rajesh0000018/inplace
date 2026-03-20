@@ -3,12 +3,9 @@ require_once '../../includes/auth.php';
 require_once '../../config/db.php';
 
 requireAuth('tutor');
-
 header('Content-Type: application/json; charset=utf-8');
 
-$userId = authId();
-
-// Filters (same as reports.php)
+// Filters
 $filterStudent = trim($_GET['student'] ?? '');
 $filterCompany = trim($_GET['company'] ?? '');
 $filterStatus  = trim($_GET['status'] ?? '');
@@ -32,7 +29,7 @@ if ($filterStatus !== '') {
 $whereSQL = "WHERE " . implode(" AND ", $where);
 
 try {
-  // KPI: total placements
+  // KPI total placements
   $stmt = $pdo->prepare("
     SELECT COUNT(*)
     FROM placements p
@@ -41,9 +38,9 @@ try {
     $whereSQL
   ");
   $stmt->execute($params);
-  $kpi_totalPlacements = (int)$stmt->fetchColumn();
+  $totalPlacements = (int)$stmt->fetchColumn();
 
-  // KPI: total reflections
+  // KPI total reflections
   $stmt = $pdo->prepare("
     SELECT COUNT(*)
     FROM reflections r
@@ -53,9 +50,9 @@ try {
     $whereSQL
   ");
   $stmt->execute($params);
-  $kpi_totalReflections = (int)$stmt->fetchColumn();
+  $totalReflections = (int)$stmt->fetchColumn();
 
-  // KPI: total visits
+  // KPI total visits
   $stmt = $pdo->prepare("
     SELECT COUNT(*)
     FROM visits v
@@ -65,11 +62,11 @@ try {
     $whereSQL
   ");
   $stmt->execute($params);
-  $kpi_totalVisits = (int)$stmt->fetchColumn();
+  $totalVisits = (int)$stmt->fetchColumn();
 
-  $kpi_avgReflections = $kpi_totalPlacements > 0 ? round($kpi_totalReflections / $kpi_totalPlacements, 1) : 0;
+  $avgReflections = $totalPlacements > 0 ? round($totalReflections / $totalPlacements, 1) : 0;
 
-  // Chart 1: placements by status
+  // Chart: placements by status
   $stmt = $pdo->prepare("
     SELECT LOWER(p.status) AS status, COUNT(*) AS cnt
     FROM placements p
@@ -80,9 +77,9 @@ try {
     ORDER BY cnt DESC
   ");
   $stmt->execute($params);
-  $chartStatus = $stmt->fetchAll(PDO::FETCH_ASSOC);
+  $status = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-  // Chart 2: placements by city (top 8)
+  // Chart: placements by city (top 8)
   $stmt = $pdo->prepare("
     SELECT COALESCE(NULLIF(c.city,''),'Unknown') AS city, COUNT(*) AS cnt
     FROM placements p
@@ -94,11 +91,12 @@ try {
     LIMIT 8
   ");
   $stmt->execute($params);
-  $chartCity = $stmt->fetchAll(PDO::FETCH_ASSOC);
+  $city = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-  // Chart 3: reflections trend (last 12 weeks)
+  // Chart: reflections trend (last 12 weeks) - safer than DATE_FORMAT
   $stmt = $pdo->prepare("
-    SELECT DATE_FORMAT(r.created_at, '%Y-%u') AS yearweek, COUNT(*) AS cnt
+    SELECT CONCAT(YEAR(r.created_at), '-', LPAD(WEEK(r.created_at, 1), 2, '0')) AS yearweek,
+           COUNT(*) AS cnt
     FROM reflections r
     JOIN placements p ON p.id = r.placement_id
     JOIN users u ON u.id = p.student_id
@@ -110,35 +108,35 @@ try {
   ");
   $stmt->execute($params);
   $tmp = $stmt->fetchAll(PDO::FETCH_ASSOC);
-  $chartReflectionTrend = array_reverse($tmp);
+  $reflectionTrend = array_reverse($tmp);
 
-  // Chart 4: visits by type
+  // Chart: visits by type (handles NULL type)
   $stmt = $pdo->prepare("
-    SELECT LOWER(v.type) AS type, COUNT(*) AS cnt
+    SELECT COALESCE(NULLIF(LOWER(v.type),''),'unknown') AS type, COUNT(*) AS cnt
     FROM visits v
     JOIN placements p ON p.id = v.placement_id
     JOIN users u ON u.id = p.student_id
     JOIN companies c ON c.id = p.company_id
     $whereSQL
-    GROUP BY LOWER(v.type)
+    GROUP BY type
     ORDER BY cnt DESC
   ");
   $stmt->execute($params);
-  $chartVisitType = $stmt->fetchAll(PDO::FETCH_ASSOC);
+  $visitType = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   echo json_encode([
     'ok' => true,
     'kpis' => [
-      'totalPlacements' => $kpi_totalPlacements,
-      'totalReflections' => $kpi_totalReflections,
-      'totalVisits' => $kpi_totalVisits,
-      'avgReflections' => $kpi_avgReflections,
+      'totalPlacements' => $totalPlacements,
+      'totalReflections' => $totalReflections,
+      'totalVisits' => $totalVisits,
+      'avgReflections' => $avgReflections,
     ],
     'charts' => [
-      'status' => $chartStatus,
-      'city' => $chartCity,
-      'reflectionTrend' => $chartReflectionTrend,
-      'visitType' => $chartVisitType,
+      'status' => $status,
+      'city' => $city,
+      'reflectionTrend' => $reflectionTrend,
+      'visitType' => $visitType,
     ],
     'ts' => time()
   ]);
@@ -146,6 +144,6 @@ try {
   http_response_code(500);
   echo json_encode([
     'ok' => false,
-    'error' => 'Server error while building metrics.',
+    'error' => $e->getMessage()
   ]);
 }

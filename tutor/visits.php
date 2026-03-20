@@ -36,6 +36,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['complete_visit'])) {
     $actionType = "success";
 }
 
+// ── Handle cancel visit action ───────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cancel_visit'])) {
+    $visitId = (int)$_POST['visit_id'];
+    $reason  = trim($_POST['cancel_reason'] ?? '');
+
+    $stmt = $pdo->prepare("
+        UPDATE visits
+        SET status = 'cancelled', notes = CONCAT(COALESCE(notes, ''), '\n[CANCELLED] ', ?), updated_at = NOW()
+        WHERE id = ? AND tutor_id = ?
+    ");
+    $stmt->execute([$reason ?: 'Cancelled by tutor', $visitId, $userId]);
+
+    // Notify student
+    $stmt = $pdo->prepare("
+        SELECT p.student_id, v.visit_date, v.visit_time
+        FROM visits v
+        JOIN placements p ON v.placement_id = p.id
+        WHERE v.id = ?
+    ");
+    $stmt->execute([$visitId]);
+    $row = $stmt->fetch();
+
+    if ($row) {
+        $msg = "⚠️ Your visit scheduled for " . date('d M Y', strtotime($row['visit_date'])) . " at " . date('g:i A', strtotime($row['visit_time'])) . " has been cancelled by your tutor." . ($reason ? " Reason: $reason" : "");
+        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'visit_cancelled', ?)");
+        $stmt->execute([$row['student_id'], $msg]);
+    }
+
+    $actionMsg  = "Visit cancelled successfully. Student has been notified.";
+    $actionType = "warning";
+}
+
 // ── Filters ──────────────────────────────────────────────────────
 $filterType = $_GET['type'] ?? '';
 $filterDate = $_GET['date'] ?? '';
@@ -266,20 +298,14 @@ foreach ($visits as $v) {
                         <!-- Edit/Reschedule -->
                         <button class="btn btn-ghost"
                                 style="flex:1;justify-content:center;"
-                                onclick="window.location='/inplace/tutor/schedule-visit.php?edit=<?= $v['id'] ?>'">
+                                onclick="window.location='/inplace/tutor/edit-visit.php?id=<?= $v['id'] ?>'">
                             Edit
                         </button>
 
                         <!-- Cancel -->
                         <?php if ($v['status'] !== 'cancelled'): ?>
                         <button class="btn btn-danger btn-sm"
-                                onclick="if(confirm('Cancel this visit?')){
-                                    const form=document.createElement('form');
-                                    form.method='POST';
-                                    form.innerHTML='<input name=visit_id value=<?=$v['id']?>><input name=cancel_visit value=1>';
-                                    document.body.append(form);
-                                    form.submit();
-                                }">
+                                onclick="openCancelModal(<?= $v['id'] ?>, '<?= htmlspecialchars($v['student_name'], ENT_QUOTES) ?>', '<?= htmlspecialchars(date('d M Y', strtotime($v['visit_date'])), ENT_QUOTES) ?>')">
                             ✕
                         </button>
                         <?php endif; ?>
@@ -353,6 +379,46 @@ foreach ($visits as $v) {
 
     </div><!-- /page-content -->
 </div><!-- /main -->
+
+
+<!-- ══════════════════════════════════════════════════════════════
+     MODAL: Cancel Visit
+══════════════════════════════════════════════════════════════ -->
+<div id="cancelModal" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+    <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;
+                width:100%;max-width:480px;box-shadow:0 20px 60px rgba(0,0,0,0.2);">
+        <h3 style="font-family:'Playfair Display',serif;font-size:1.375rem;
+                   color:var(--danger);margin-bottom:0.5rem;">
+            ⚠️ Cancel Visit
+        </h3>
+        <p id="cancelSubtitle" style="color:var(--muted);font-size:0.9rem;margin-bottom:1.5rem;"></p>
+        <form method="POST">
+            <input type="hidden" name="visit_id" id="cancelVisitId">
+            <input type="hidden" name="cancel_visit" value="1">
+            <div style="margin-bottom:1.5rem;">
+                <label style="display:block;font-size:0.875rem;font-weight:500;
+                              color:var(--text);margin-bottom:0.5rem;">
+                    Reason for cancellation (optional)
+                </label>
+                <textarea name="cancel_reason" rows="3"
+                          placeholder="e.g., Student requested reschedule, scheduling conflict..."
+                          style="width:100%;padding:0.875rem 1rem;border:2px solid var(--border);
+                                 border-radius:var(--radius-sm);font-family:inherit;
+                                 font-size:0.9375rem;background:var(--cream);resize:vertical;"></textarea>
+            </div>
+            <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+                <button type="button" class="btn btn-ghost"
+                        onclick="document.getElementById('cancelModal').style.display='none'">
+                    Keep Visit
+                </button>
+                <button type="submit" class="btn btn-danger">
+                    ✕ Cancel Visit
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
 
 
 <!-- ══════════════════════════════════════════════════════════════
@@ -430,6 +496,13 @@ foreach ($visits as $v) {
 
 
 <script>
+function openCancelModal(visitId, studentName, dateStr) {
+    document.getElementById('cancelVisitId').value = visitId;
+    document.getElementById('cancelSubtitle').textContent = 
+        'Cancel visit with ' + studentName + ' on ' + dateStr + '? The student will be notified.';
+    document.getElementById('cancelModal').style.display = 'flex';
+}
+
 function openNotes(visitId, studentName, dateStr) {
     document.getElementById('notesVisitId').value = visitId;
     document.getElementById('notesSubtitle').textContent = studentName + ' · ' + dateStr;
@@ -442,7 +515,7 @@ function openComplete(visitId) {
 }
 
 // Close modals on outside click
-['notesModal','completeModal'].forEach(id => {
+['cancelModal','notesModal','completeModal'].forEach(id => {
     document.getElementById(id).addEventListener('click', function(e) {
         if (e.target === this) this.style.display = 'none';
     });

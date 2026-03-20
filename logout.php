@@ -2,5 +2,5 @@
 session_start();
 session_unset();
 session_destroy();
-header("Location: /inplace/index.php");
+header("Location: /inplace/index.html");
 exit;
