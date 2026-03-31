@@ -1,6 +1,8 @@
 <?php
 require_once '../includes/auth.php';
 require_once '../config/db.php';
+require_once '../config/app_config.php';
+loadAppConfig($pdo);
 
 requireAuth('tutor');
 
@@ -274,7 +276,7 @@ function esc(s){
 
 // Leaflet map
 const map = L.map('map').setView([54.5, -3.0], 6);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+L.tileLayer('<?= appConfig('leaflet_tile_url', 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png') ?>', {
   maxZoom: 19,
   attribution: '&copy; OpenStreetMap'
 }).addTo(map);

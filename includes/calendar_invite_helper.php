@@ -111,13 +111,14 @@ function sendCalendarInvite($visit, $organizer, $attendees) {
         error_log("PHPMailer: $str");
     };
     
+$mailCfg = require __DIR__ . '/../config/email_config.php';
 $mail->isSMTP();
-$mail->Host       = 'smtp.gmail.com';
+$mail->Host       = $mailCfg['smtp_host'];
 $mail->SMTPAuth   = true;
-$mail->Username   = 'kelothchinna2@gmail.com';
-$mail->Password   = 'ifgc gdca rihr qmvo';  
+$mail->Username   = $mailCfg['smtp_user'];
+$mail->Password   = $mailCfg['smtp_pass'];
 $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-$mail->Port       = 587;
+$mail->Port       = $mailCfg['smtp_port'];
 
 
 

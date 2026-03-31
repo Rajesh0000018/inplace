@@ -2,6 +2,100 @@
 session_start();
 require_once __DIR__ . '/config/db.php';
 
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as MailException;
+
+require_once __DIR__ . '/PHPMailer-master/src/Exception.php';
+require_once __DIR__ . '/PHPMailer-master/src/PHPMailer.php';
+require_once __DIR__ . '/PHPMailer-master/src/SMTP.php';
+
+function sendAdminRegistrationNotification(PDO $pdo, int $newUserId, string $fullName, string $email, string $academicYear, string $programmeType): void {
+    // Fetch all admin emails
+    $stmt = $pdo->query("SELECT email, full_name FROM users WHERE role = 'admin' AND is_active = 1");
+    $admins = $stmt->fetchAll();
+    if (empty($admins)) return;
+
+    $mailCfg = require __DIR__ . '/config/email_config.php';
+
+    // Build base URL
+    $scheme   = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host     = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $approvalUrl = $scheme . '://' . $host . '/inplace/admin/approve-registrations.php';
+
+    $registeredAt = date('d M Y, H:i');
+
+    $htmlBody = "
+    <div style='font-family:\"DM Sans\",Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+      <div style='background:linear-gradient(135deg,#0c1b33 0%,#1a2d4d 100%);padding:2rem;text-align:center;'>
+        <h1 style='color:#ffffff;font-size:1.5rem;margin:0;font-family:Georgia,serif;'>InPlace</h1>
+        <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>New Student Registration — Pending Approval</p>
+      </div>
+      <div style='padding:2rem;'>
+        <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>A new student has registered and is awaiting your approval.</p>
+        <table style='width:100%;border-collapse:collapse;margin-bottom:1.5rem;'>
+          <tr style='background:#f8f5f0;'>
+            <td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;width:40%;border-bottom:1px solid #e2e8f0;'>Full Name</td>
+            <td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($fullName) . "</td>
+          </tr>
+          <tr>
+            <td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Email</td>
+            <td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($email) . "</td>
+          </tr>
+          <tr style='background:#f8f5f0;'>
+            <td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Academic Year</td>
+            <td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($academicYear) . "</td>
+          </tr>
+          <tr>
+            <td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Programme</td>
+            <td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($programmeType) . "</td>
+          </tr>
+          <tr style='background:#f8f5f0;'>
+            <td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>Registered At</td>
+            <td style='padding:0.75rem 1rem;color:#374151;'>$registeredAt</td>
+          </tr>
+        </table>
+        <div style='text-align:center;margin:2rem 0;'>
+          <a href='$approvalUrl'
+             style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;
+                    color:#ffffff !important;text-decoration:none;border-radius:10px;
+                    font-weight:700;font-size:1rem;border:2px solid #0c1b33;
+                    mso-padding-alt:0;'>
+            Review &amp; Approve Registration
+          </a>
+        </div>
+        <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>
+          This is an automated notification from InPlace. The student cannot log in until approved.
+        </p>
+      </div>
+    </div>";
+
+    $altBody = "New student registration pending approval.\n\nName: $fullName\nEmail: $email\nAcademic Year: $academicYear\nProgramme: $programmeType\nRegistered: $registeredAt\n\nApprove here: $approvalUrl";
+
+    foreach ($admins as $admin) {
+        $mail = new PHPMailer(true);
+        try {
+            $mail->isSMTP();
+            $mail->Host       = $mailCfg['smtp_host'];
+            $mail->SMTPAuth   = true;
+            $mail->Username   = $mailCfg['smtp_user'];
+            $mail->Password   = $mailCfg['smtp_pass'];
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+            $mail->Port       = $mailCfg['smtp_port'];
+            $mail->CharSet    = 'UTF-8';
+            $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+            $mail->addAddress($admin['email'], $admin['full_name']);
+            $mail->isHTML(true);
+            $mail->Subject = "InPlace - New Registration Pending Approval: $fullName";
+            $mail->Body    = $htmlBody;
+            $mail->AltBody = $altBody;
+            $mail->send();
+        } catch (MailException $e) {
+            // Log silently — don't block the student's registration
+            error_log('Admin notification email failed to ' . $admin['email'] . ': ' . $mail->ErrorInfo);
+        }
+    }
+}
+
 $error   = $_SESSION['registration_error']   ?? '';
 $success = $_SESSION['registration_success'] ?? '';
 unset($_SESSION['registration_error'], $_SESSION['registration_success']);
@@ -133,6 +227,11 @@ if (!password_verify($enteredOtp, $storedOtpHash) || $emailLower !== $sessionEma
             $initials
         ]);
 
+        $newUserId = (int)$pdo->lastInsertId();
+
+        // Notify all admins about the new registration
+        sendAdminRegistrationNotification($pdo, $newUserId, $fullName, $email, $academicYear, $programmeType);
+
         // Clear OTP session data
         unset($_SESSION['registration_otp'], $_SESSION['registration_email'], $_SESSION['otp_timestamp']);
 
@@ -146,8 +245,6 @@ if (!password_verify($enteredOtp, $storedOtpHash) || $emailLower !== $sessionEma
         exit;
     }
 }
-?>
-
 ?>
 <!DOCTYPE html>
 <html lang="en">

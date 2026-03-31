@@ -70,6 +70,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $actionType = 'danger';
         }
     }
+
+    if (isset($_POST['edit_user'])) {
+        $targetUserId = (int)$_POST['user_id'];
+        $fullName  = trim($_POST['full_name']);
+        $email     = trim($_POST['email']);
+        $role      = $_POST['role'];
+        $studentId = trim($_POST['student_id'] ?? '');
+        $companyId = $_POST['company_id'] ? (int)$_POST['company_id'] : null;
+        $isActive  = isset($_POST['is_active']) ? 1 : 0;
+        $parts     = preg_split('/\s+/', $fullName);
+        $initials  = strtoupper(substr($parts[0], 0, 1) . substr(end($parts), 0, 1));
+
+        try {
+            if (!empty($_POST['new_password'])) {
+                $passwordHash = password_hash($_POST['new_password'], PASSWORD_DEFAULT);
+                $stmt = $pdo->prepare("
+                    UPDATE users SET full_name=?, email=?, role=?, student_id=?, company_id=?,
+                    is_active=?, avatar_initials=?, password=? WHERE id=?
+                ");
+                $stmt->execute([$fullName, $email, $role, $studentId, $companyId, $isActive, $initials, $passwordHash, $targetUserId]);
+            } else {
+                $stmt = $pdo->prepare("
+                    UPDATE users SET full_name=?, email=?, role=?, student_id=?, company_id=?,
+                    is_active=?, avatar_initials=? WHERE id=?
+                ");
+                $stmt->execute([$fullName, $email, $role, $studentId, $companyId, $isActive, $initials, $targetUserId]);
+            }
+            $actionMsg  = "User updated successfully.";
+            $actionType = 'success';
+        } catch (Exception $e) {
+            $actionMsg  = "Error updating user: " . $e->getMessage();
+            $actionType = 'danger';
+        }
+    }
 }
 
 // Filters
@@ -225,32 +259,26 @@ $companies = $pdo->query("SELECT id, name FROM companies ORDER BY name ASC")->fe
                                         Edit
                                     </button>
                                     <?php if ($u['is_active']): ?>
-                                        <form method="POST" style="display:inline;">
+                                        <form method="POST" action="users.php" style="display:inline;">
                                             <input type="hidden" name="user_id" value="<?= $u['id'] ?>">
-                                            <button type="submit" name="deactivate_user"
-                                                    class="btn btn-warning btn-sm"
-                                                    onclick="return confirm('Deactivate this user?')">
+                                            <button type="button" class="btn btn-warning btn-sm"
+                                                    onclick="openConfirm('deactivate', <?= $u['id'] ?>, '<?= htmlspecialchars($u['full_name'], ENT_QUOTES) ?>')">
                                                 Deactivate
                                             </button>
                                         </form>
                                     <?php else: ?>
-                                        <form method="POST" style="display:inline;">
+                                        <form method="POST" action="users.php" id="activateForm_<?= $u['id'] ?>" style="display:inline;">
                                             <input type="hidden" name="user_id" value="<?= $u['id'] ?>">
-                                            <button type="submit" name="activate_user"
-                                                    class="btn btn-success btn-sm">
+                                            <button type="submit" name="activate_user" class="btn btn-success btn-sm">
                                                 Activate
                                             </button>
                                         </form>
                                     <?php endif; ?>
                                     <?php if ($u['id'] != $userId): ?>
-                                        <form method="POST" style="display:inline;">
-                                            <input type="hidden" name="user_id" value="<?= $u['id'] ?>">
-                                            <button type="submit" name="delete_user"
-                                                    class="btn btn-danger btn-sm"
-                                                    onclick="return confirm('DELETE this user permanently? This cannot be undone.')">
-                                                Delete
-                                            </button>
-                                        </form>
+                                        <button type="button" class="btn btn-danger btn-sm"
+                                                onclick="openConfirm('delete', <?= $u['id'] ?>, '<?= htmlspecialchars($u['full_name'], ENT_QUOTES) ?>')">
+                                            Delete
+                                        </button>
                                     <?php endif; ?>
                                 </div>
                             </td>
@@ -323,19 +351,154 @@ $companies = $pdo->query("SELECT id, name FROM companies ORDER BY name ASC")->fe
     </div>
 </div>
 
+<!-- EDIT USER MODAL -->
+<div id="editModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);
+     z-index:1000;align-items:center;justify-content:center;overflow-y:auto;">
+    <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;
+                width:100%;max-width:600px;margin:2rem;box-shadow:0 20px 60px rgba(0,0,0,0.2);">
+        <h3 style="font-family:'Playfair Display',serif;font-size:1.375rem;
+                   color:var(--navy);margin-bottom:1.5rem;">Edit User</h3>
+        <form method="POST" action="users.php">
+            <input type="hidden" name="user_id" id="editUserId">
+            <div class="form-grid" style="margin-bottom:1.5rem;">
+                <div class="form-group full-col">
+                    <label>Full Name <span style="color:var(--danger);">*</span></label>
+                    <input type="text" name="full_name" id="editFullName" required>
+                </div>
+                <div class="form-group full-col">
+                    <label>Email <span style="color:var(--danger);">*</span></label>
+                    <input type="email" name="email" id="editEmail" required>
+                </div>
+                <div class="form-group">
+                    <label>Role <span style="color:var(--danger);">*</span></label>
+                    <select name="role" id="editRole" required onchange="toggleEditFields()">
+                        <option value="student">Student</option>
+                        <option value="tutor">Tutor</option>
+                        <option value="provider">Provider</option>
+                        <option value="admin">Admin</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Status</label>
+                    <select name="is_active" id="editIsActive">
+                        <option value="1">Active</option>
+                        <option value="0">Inactive</option>
+                    </select>
+                </div>
+                <div class="form-group" id="editStudentIdField">
+                    <label>Student ID</label>
+                    <input type="text" name="student_id" id="editStudentId" placeholder="e.g., 190123456">
+                </div>
+                <div class="form-group" id="editCompanyField" style="display:none;">
+                    <label>Company</label>
+                    <select name="company_id" id="editCompanyId">
+                        <option value="">-- Select company --</option>
+                        <?php foreach ($companies as $c): ?>
+                        <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group full-col">
+                    <label>New Password <span style="color:var(--muted);font-weight:400;">(leave blank to keep current)</span></label>
+                    <input type="password" name="new_password" placeholder="Enter new password to change it" minlength="6">
+                </div>
+            </div>
+            <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+                <button type="button" class="btn btn-ghost" onclick="closeEdit()">Cancel</button>
+                <button type="submit" name="edit_user" class="btn btn-primary">Save Changes</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- CONFIRM ACTION MODAL (Deactivate / Delete) -->
+<div id="confirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);
+     z-index:1001;align-items:center;justify-content:center;">
+    <div style="background:var(--white);border-radius:var(--radius);padding:2rem;
+                width:100%;max-width:440px;margin:2rem;box-shadow:0 20px 60px rgba(0,0,0,0.2);">
+        <h3 id="confirmTitle" style="font-family:'Playfair Display',serif;font-size:1.25rem;
+                   color:var(--navy);margin-bottom:0.5rem;"></h3>
+        <p id="confirmDesc" style="color:var(--muted);font-size:0.9rem;margin-bottom:1.5rem;"></p>
+        <form method="POST" action="users.php" id="confirmForm">
+            <input type="hidden" name="user_id" id="confirmUserId">
+            <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+                <button type="button" class="btn btn-ghost" onclick="closeConfirm()">Cancel</button>
+                <button type="submit" id="confirmSubmitBtn" name="deactivate_user" class="btn btn-danger">Confirm</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <script>
+// ---------- Create modal ----------
 function toggleFields() {
     const role = document.getElementById('roleSelect').value;
     document.getElementById('studentIdField').style.display = (role === 'student') ? 'block' : 'none';
-    document.getElementById('companyField').style.display = (role === 'provider') ? 'block' : 'none';
-}
-
-function openEdit(user) {
-    alert('Edit user feature - coming soon!\n\nUser: ' + user.full_name);
+    document.getElementById('companyField').style.display   = (role === 'provider') ? 'block' : 'none';
 }
 
 document.getElementById('createModal').addEventListener('click', function(e) {
     if (e.target === this) this.style.display = 'none';
+});
+
+// ---------- Edit modal ----------
+function openEdit(user) {
+    document.getElementById('editUserId').value    = user.id;
+    document.getElementById('editFullName').value  = user.full_name;
+    document.getElementById('editEmail').value     = user.email;
+    document.getElementById('editRole').value      = user.role;
+    document.getElementById('editStudentId').value = user.student_id || '';
+    document.getElementById('editIsActive').value  = user.is_active ? '1' : '0';
+
+    const companySelect = document.getElementById('editCompanyId');
+    if (companySelect) companySelect.value = user.company_id || '';
+
+    toggleEditFields();
+    document.getElementById('editModal').style.display = 'flex';
+}
+
+function closeEdit() {
+    document.getElementById('editModal').style.display = 'none';
+}
+
+function toggleEditFields() {
+    const role = document.getElementById('editRole').value;
+    document.getElementById('editStudentIdField').style.display = (role === 'student') ? 'block' : 'none';
+    document.getElementById('editCompanyField').style.display   = (role === 'provider') ? 'block' : 'none';
+}
+
+document.getElementById('editModal').addEventListener('click', function(e) {
+    if (e.target === this) closeEdit();
+});
+
+// ---------- Confirm (deactivate / delete) modal ----------
+function openConfirm(action, userId, userName) {
+    document.getElementById('confirmUserId').value = userId;
+
+    const btn = document.getElementById('confirmSubmitBtn');
+    if (action === 'deactivate') {
+        document.getElementById('confirmTitle').textContent = 'Deactivate User';
+        document.getElementById('confirmDesc').textContent  = 'Deactivate account for: ' + userName + '? They will not be able to log in.';
+        btn.className   = 'btn btn-warning';
+        btn.textContent = 'Deactivate';
+        btn.name        = 'deactivate_user';
+    } else {
+        document.getElementById('confirmTitle').textContent = 'Delete User';
+        document.getElementById('confirmDesc').textContent  = 'Permanently delete ' + userName + '? This cannot be undone.';
+        btn.className   = 'btn btn-danger';
+        btn.textContent = 'Delete';
+        btn.name        = 'delete_user';
+    }
+
+    document.getElementById('confirmModal').style.display = 'flex';
+}
+
+function closeConfirm() {
+    document.getElementById('confirmModal').style.display = 'none';
+}
+
+document.getElementById('confirmModal').addEventListener('click', function(e) {
+    if (e.target === this) closeConfirm();
 });
 </script>
 

@@ -2,6 +2,13 @@
 require_once '../includes/auth.php';
 require_once '../config/db.php';
 
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as MailException;
+
+require_once __DIR__ . '/../PHPMailer-master/src/Exception.php';
+require_once __DIR__ . '/../PHPMailer-master/src/PHPMailer.php';
+require_once __DIR__ . '/../PHPMailer-master/src/SMTP.php';
+
 requireAuth('admin');
 
 $pageTitle = 'Registration Approvals';
@@ -27,6 +34,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             WHERE id = ?
         ");
         $stmt->execute([$userId, $targetUserId]);
+
+        // Send approval email to the student
+        $studentStmt = $pdo->prepare("SELECT full_name, email FROM users WHERE id = ?");
+        $studentStmt->execute([$targetUserId]);
+        $student = $studentStmt->fetch();
+
+        if ($student) {
+            $mailCfg = require __DIR__ . '/../config/email_config.php';
+            $loginUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http')
+                        . '://' . $_SERVER['HTTP_HOST'] . '/inplace/login.php';
+
+            $htmlBody = "
+            <div style='font-family:\"DM Sans\",Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+              <div style='background:linear-gradient(135deg,#0c1b33 0%,#1a2d4d 100%);padding:2rem;text-align:center;'>
+                <h1 style='color:#ffffff;font-size:1.5rem;margin:0;font-family:Georgia,serif;'>InPlace</h1>
+                <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Registration Approved</p>
+              </div>
+              <div style='padding:2rem;'>
+                <h2 style='color:#0c1b33;font-family:Georgia,serif;margin-bottom:0.5rem;'>Welcome, " . htmlspecialchars($student['full_name']) . "!</h2>
+                <p style='color:#374151;font-size:1rem;line-height:1.6;margin-bottom:1.5rem;'>
+                  Your InPlace account has been <strong style='color:#10b981;'>approved</strong> by the admin.
+                  You can now log in and start your industrial placement journey.
+                </p>
+                <div style='background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.5rem;'>
+                  <p style='margin:0;color:#15803d;font-size:0.9rem;'>
+                    Your account is now active. Log in with your registered email address.
+                  </p>
+                </div>
+                <div style='text-align:center;margin:2rem 0;'>
+                  <a href='$loginUrl'
+                     style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;
+                            color:#ffffff !important;text-decoration:none;border-radius:10px;
+                            font-weight:700;font-size:1rem;border:2px solid #0c1b33;
+                            mso-padding-alt:0;'>
+                    Log In to InPlace
+                  </a>
+                </div>
+                <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>
+                  This is an automated notification from InPlace.
+                </p>
+              </div>
+            </div>";
+
+            $altBody = "Hi {$student['full_name']},\n\nYour InPlace account has been approved! You can now log in at: $loginUrl\n\nWelcome aboard.";
+
+            $mail = new PHPMailer(true);
+            try {
+                $mail->isSMTP();
+                $mail->Host       = $mailCfg['smtp_host'];
+                $mail->SMTPAuth   = true;
+                $mail->Username   = $mailCfg['smtp_user'];
+                $mail->Password   = $mailCfg['smtp_pass'];
+                $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                $mail->Port       = $mailCfg['smtp_port'];
+                $mail->CharSet    = 'UTF-8';
+                $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                $mail->addAddress($student['email'], $student['full_name']);
+                $mail->isHTML(true);
+                $mail->Subject = 'InPlace - Your Registration Has Been Approved';
+                $mail->Body    = $htmlBody;
+                $mail->AltBody = $altBody;
+                $mail->send();
+            } catch (MailException $e) {
+                error_log('Approval email failed to ' . $student['email'] . ': ' . $mail->ErrorInfo);
+            }
+        }
 
         $actionMsg = "Student account approved successfully!";
         $actionType = 'success';
