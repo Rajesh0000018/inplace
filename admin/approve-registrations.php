@@ -105,16 +105,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $actionType = 'success';
 
     } elseif ($targetUserId > 0 && $action === 'reject') {
-        $reason = trim($_POST['rejection_reason'] ?? '');
+        // Delete the user entirely so they can re-register with the same email next year
+        $pdo->prepare("DELETE FROM users WHERE id = ? AND approval_status = 'pending'")->execute([$targetUserId]);
 
-        $stmt = $pdo->prepare("
-            UPDATE users
-            SET approval_status = 'rejected', approved_by = ?, approved_at = NOW(), rejection_reason = ?
-            WHERE id = ?
-        ");
-        $stmt->execute([$userId, $reason, $targetUserId]);
-
-        $actionMsg = "Student registration rejected.";
+        $actionMsg = "Registration rejected and user record deleted. They can register again next year.";
         $actionType = 'warning';
     }
 }
@@ -124,9 +118,9 @@ $stmt = $pdo->query("
     SELECT
         id, full_name, email, academic_year, programme_type, created_at, approval_status
     FROM users
-    WHERE role = 'student' AND approval_status IN ('pending', 'approved', 'rejected')
+    WHERE role = 'student' AND approval_status IN ('pending', 'approved')
     ORDER BY
-        FIELD(approval_status, 'pending', 'approved', 'rejected'),
+        FIELD(approval_status, 'pending', 'approved'),
         created_at DESC
 ");
 $registrations = $stmt->fetchAll();
@@ -329,25 +323,22 @@ foreach ($registrations as $reg) {
   <div class="ip-modal" role="dialog" aria-modal="true" aria-labelledby="rejectTitle">
     <h3 id="rejectTitle" style="font-family:'Playfair Display',serif;font-size:1.375rem;
                    color:var(--danger);margin-bottom:0.5rem;">
-      ⚠️ Reject Registration
+      ⚠️ Reject &amp; Delete Registration
     </h3>
     <p id="rejectStudentName" style="color:var(--muted);font-size:0.9rem;margin-bottom:1.5rem;"></p>
+
+    <div style="background:#fff5f5;border:1px solid #fca5a5;border-radius:var(--radius-sm);
+                padding:0.875rem 1rem;margin-bottom:1.25rem;">
+      <p style="margin:0;color:var(--danger);font-size:0.9rem;">
+        This will <strong>permanently delete</strong> the user's record. They will be able to re-register next year with the same email.
+      </p>
+    </div>
 
     <form method="POST" id="rejectForm">
       <input type="hidden" name="user_id" id="rejectUserId">
       <input type="hidden" name="action" value="reject">
 
       <div style="margin-bottom:1.5rem;">
-        <label style="display:block;font-size:0.875rem;font-weight:500;
-                      color:var(--text);margin-bottom:0.5rem;">
-          Reason for rejection (optional)
-        </label>
-        <textarea name="rejection_reason" rows="4"
-                  placeholder="e.g., Not a third-year student, invalid email domain..."
-                  style="width:100%;padding:0.875rem 1rem;border:2px solid var(--border);
-                         border-radius:var(--radius-sm);font-family:inherit;
-                         font-size:0.9375rem;background:var(--cream);resize:vertical;"></textarea>
-      </div>
 
       <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
         <button type="button" class="btn btn-ghost" onclick="closeRejectModal()">Cancel</button>
