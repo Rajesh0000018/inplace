@@ -1,6 +1,13 @@
 <?php
 require_once '../includes/auth.php';
 require_once '../config/db.php';
+require_once '../config/app_config.php';
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as MailException;
+require_once __DIR__ . '/../PHPMailer-master/src/Exception.php';
+require_once __DIR__ . '/../PHPMailer-master/src/PHPMailer.php';
+require_once __DIR__ . '/../PHPMailer-master/src/SMTP.php';
 
 requireAuth('tutor');
 
@@ -17,10 +24,89 @@ $unreadCount = (int)$stmt->fetchColumn();
 $stmt = $pdo->query("SELECT COUNT(*) FROM placements WHERE status IN ('submitted','awaiting_tutor')");
 $pendingRequests = (int)$stmt->fetchColumn();
 
-// ── Handle approve/reject report action ──────────────────────────
+// ── Handle send reminder ─────────────────────────────────────────
 $actionMsg  = '';
 $actionType = '';
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_reminder'])) {
+    $studentId    = (int)$_POST['student_id'];
+    $studentEmail = trim($_POST['student_email']);
+    $studentName  = trim($_POST['student_name']);
+    $missingTypes = $_POST['missing_types'] ?? [];   // ['interim','final']
+
+    if ($studentEmail && !empty($missingTypes)) {
+        loadAppConfig($pdo);
+        $mailCfg = require __DIR__ . '/../config/email_config.php';
+
+        $missingList = implode(' and ', array_map('ucfirst', $missingTypes)) . ' Report' . (count($missingTypes) > 1 ? 's' : '');
+
+        $scheme      = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        $host        = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $reportsUrl  = $scheme . '://' . $host . '/inplace/student/reports.php';
+
+        $tutorName = authName();
+
+        $htmlBody = "
+        <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;
+                    border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+          <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
+            <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
+            <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Placement Report Reminder</p>
+          </div>
+          <div style='padding:2rem;'>
+            <p style='color:#374151;font-size:1rem;margin-bottom:1rem;'>Dear " . htmlspecialchars($studentName) . ",</p>
+            <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
+              This is a reminder that your <strong>" . htmlspecialchars($missingList) . "</strong>
+              for your placement has not yet been submitted on InPlace.
+            </p>
+            <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
+              Please log in and upload your report as soon as possible.
+            </p>
+            <div style='text-align:center;margin:2rem 0;'>
+              <a href='$reportsUrl'
+                 style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;
+                        color:#ffffff !important;text-decoration:none;border-radius:10px;
+                        font-weight:700;font-size:1rem;border:2px solid #0c1b33;'>
+                Submit My Report
+              </a>
+            </div>
+            <p style='color:#6b7a8d;font-size:0.875rem;'>
+              If you have any questions, please contact your tutor " . htmlspecialchars($tutorName) . " directly.
+            </p>
+            <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;margin-top:2rem;'>
+              This is an automated notification from InPlace.
+            </p>
+          </div>
+        </div>";
+
+        $mail = new PHPMailer(true);
+        try {
+            $mail->isSMTP();
+            $mail->Host       = $mailCfg['smtp_host'];
+            $mail->SMTPAuth   = true;
+            $mail->Username   = $mailCfg['smtp_user'];
+            $mail->Password   = $mailCfg['smtp_pass'];
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+            $mail->Port       = $mailCfg['smtp_port'];
+            $mail->CharSet    = 'UTF-8';
+            $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+            $mail->addAddress($studentEmail, $studentName);
+            $mail->isHTML(true);
+            $mail->Subject = 'InPlace - Placement Report Reminder: ' . $missingList . ' Required';
+            $mail->Body    = $htmlBody;
+            $mail->AltBody = "Reminder: Your $missingList for your placement has not been submitted. Please log in at: $reportsUrl";
+            $mail->send();
+            $actionMsg  = "Reminder email sent to " . htmlspecialchars($studentName) . " successfully.";
+            $actionType = 'success';
+        } catch (MailException $e) {
+            error_log('Reminder email failed: ' . $mail->ErrorInfo);
+            $actionMsg  = "Failed to send reminder email. Please check SMTP settings.";
+            $actionType = 'danger';
+        }
+    }
+}
+
+// ── Handle approve/reject report action ──────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $docId   = (int)$_POST['document_id'];
     $action  = $_POST['action'];  // 'approved' or 'revision_needed'
@@ -41,12 +127,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         if ($row) {
             if ($action === 'approved') {
-                $msg = "✅ Your report has been approved by your placement tutor." . ($feedback ? " Feedback: $feedback" : "");
+                $msg = "Your report has been approved by your placement tutor." . ($feedback ? " Feedback: $feedback" : "");
             } else {
-                $msg = "📝 Your report requires revisions. Tutor feedback: $feedback";
+                $msg = "Your report requires revisions. Tutor feedback: $feedback";
             }
-            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'report_reviewed', ?)");
-            $stmt->execute([$row['uploaded_by'], $msg]);
+            try {
+                $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'report_reviewed', ?)");
+                $stmt->execute([$row['uploaded_by'], $msg]);
+            } catch (Exception $e) { /* notifications table may not exist */ }
         }
 
         $actionMsg  = $action === 'approved'
@@ -140,15 +228,17 @@ foreach ($statsRaw as $s) {
     }
 }
 
-// ── Upcoming deadlines (students who haven't submitted) ──────────
+// ── Students who haven't submitted one or more reports ──────────
 $stmt = $pdo->query("
     SELECT
-        u.full_name AS student_name,
-        c.name AS company_name,
+        u.id          AS student_id,
+        u.full_name   AS student_name,
+        u.email       AS student_email,
+        c.name        AS company_name,
         p.start_date,
         p.end_date,
         (SELECT COUNT(*) FROM documents WHERE placement_id = p.id AND doc_type = 'interim_report') AS interim_submitted,
-        (SELECT COUNT(*) FROM documents WHERE placement_id = p.id AND doc_type = 'final_report') AS final_submitted
+        (SELECT COUNT(*) FROM documents WHERE placement_id = p.id AND doc_type = 'final_report')   AS final_submitted
     FROM placements p
     JOIN users u ON p.student_id = u.id
     JOIN companies c ON p.company_id = c.id
@@ -445,7 +535,13 @@ $missing = $stmt->fetchAll();
                             </td>
                             <td>
                                 <button class="btn btn-ghost btn-sm"
-                                        onclick="alert('Message feature coming soon - will send reminder to student')">
+                                        onclick="openReminder(
+                                            <?= (int)$m['student_id'] ?>,
+                                            <?= json_encode($m['student_email'], JSON_HEX_TAG) ?>,
+                                            <?= json_encode($m['student_name'], JSON_HEX_TAG) ?>,
+                                            <?= (int)$m['interim_submitted'] ?>,
+                                            <?= (int)$m['final_submitted'] ?>
+                                        )">
                                     📧 Send Reminder
                                 </button>
                             </td>
@@ -537,7 +633,64 @@ $missing = $stmt->fetchAll();
 </div>
 
 
+<!-- ══════════════════════════════════════════════════════════════
+     MODAL: Send Reminder
+══════════════════════════════════════════════════════════════ -->
+<div id="reminderModal" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+    <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;
+                width:100%;max-width:500px;box-shadow:0 20px 60px rgba(0,0,0,0.2);">
+        <h3 style="font-family:'Playfair Display',serif;font-size:1.375rem;
+                   color:var(--navy);margin-bottom:0.5rem;">📧 Send Report Reminder</h3>
+        <p id="reminderSubtitle" style="color:var(--muted);font-size:0.9rem;margin-bottom:1.5rem;"></p>
+
+        <form method="POST" id="reminderForm">
+            <input type="hidden" name="send_reminder" value="1">
+            <input type="hidden" name="student_id"    id="reminderStudentId">
+            <input type="hidden" name="student_email" id="reminderStudentEmail">
+            <input type="hidden" name="student_name"  id="reminderStudentName">
+            <div id="reminderMissingInputs"></div>
+
+            <div style="background:var(--cream);border-radius:var(--radius-sm);padding:1rem 1.25rem;
+                        margin-bottom:1.5rem;border:1px solid var(--border);font-size:0.9rem;color:var(--text);">
+                An email reminder will be sent to the student asking them to submit their missing report(s).
+            </div>
+
+            <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+                <button type="button" class="btn btn-ghost" onclick="closeReminder()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Send Reminder Email</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <script>
+function openReminder(studentId, studentEmail, studentName, interimDone, finalDone) {
+    document.getElementById('reminderStudentId').value    = studentId;
+    document.getElementById('reminderStudentEmail').value = studentEmail;
+    document.getElementById('reminderStudentName').value  = studentName;
+
+    // Build missing type hidden inputs
+    let inputs = '';
+    let missing = [];
+    if (!interimDone) { inputs += '<input type="hidden" name="missing_types[]" value="interim">'; missing.push('Interim'); }
+    if (!finalDone)   { inputs += '<input type="hidden" name="missing_types[]" value="final">'; missing.push('Final'); }
+    document.getElementById('reminderMissingInputs').innerHTML = inputs;
+
+    document.getElementById('reminderSubtitle').textContent =
+        studentName + ' — Missing: ' + missing.join(' & ') + ' Report' + (missing.length > 1 ? 's' : '');
+
+    document.getElementById('reminderModal').style.display = 'flex';
+}
+
+function closeReminder() {
+    document.getElementById('reminderModal').style.display = 'none';
+}
+
+document.getElementById('reminderModal').addEventListener('click', function(e) {
+    if (e.target === this) closeReminder();
+});
+
 function openReview(docId, studentName, reportType) {
     document.getElementById('reviewDocId').value = docId;
     document.getElementById('reviewSubtitle').textContent = studentName + ' — ' + reportType + ' Report';

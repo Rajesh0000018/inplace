@@ -14,7 +14,7 @@ $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND i
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
-$stmt = $pdo->query("SELECT COUNT(*) FROM placements WHERE status IN ('submitted','awaiting_tutor')");
+$stmt = $pdo->query("SELECT COUNT(*) FROM placements WHERE status = 'awaiting_tutor'");
 $pendingRequests = (int)$stmt->fetchColumn();
 
 // ── Handle approve / reject action ──────────────────────────────
@@ -26,7 +26,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action      = $_POST['action'];       // 'approved' or 'rejected'
     $comments    = trim($_POST['comments'] ?? '');
 
-    $allowed = ['approved', 'rejected', 'awaiting_provider'];
+    $allowed = ['approved', 'rejected'];
     if (in_array($action, $allowed)) {
 
         // Update placement status
@@ -44,24 +44,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         if ($row) {
             if ($action === 'approved') {
-                $msg = "🎉 Your placement request has been approved! Log in to view your placement details.";
-            } elseif ($action === 'rejected') {
-                $msg = "Your placement request was not approved." . ($comments ? " Tutor feedback: $comments" : " Please contact your tutor for more information.");
+                $msg = "Your placement request has been approved! Log in to view your placement details.";
             } else {
-                $msg = "Your placement request requires further information. Please check your messages.";
+                $msg = "Your placement request was not approved." . ($comments ? " Tutor feedback: $comments" : " Please contact your tutor for more information.");
             }
 
-            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'placement_decision', ?)");
-            $stmt->execute([$row['student_id'], $msg]);
+            // Notify student via messages (auto-detect column)
+            try {
+                $tCol = null;
+                $s2 = $pdo->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='messages'
+                    AND COLUMN_NAME IN (?,?,?,?)");
+                $s2->execute(['created_at','sent_at','timestamp','date_sent']);
+                $found2 = $s2->fetchAll(PDO::FETCH_COLUMN);
+                foreach (['created_at','sent_at','timestamp','date_sent'] as $c) {
+                    if (in_array($c, $found2, true)) { $tCol = $c; break; }
+                }
+                if ($tCol) {
+                    $stmt = $pdo->prepare("INSERT INTO messages (sender_id, receiver_id, body, `$tCol`, is_read) VALUES (?, ?, ?, NOW(), 0)");
+                } else {
+                    $stmt = $pdo->prepare("INSERT INTO messages (sender_id, receiver_id, body, is_read) VALUES (?, ?, ?, 0)");
+                }
+                $stmt->execute([$userId, $row['student_id'], $msg]);
+            } catch (Exception $e) {
+                error_log('Tutor notify message failed: ' . $e->getMessage());
+            }
 
-            // Also send as message
-            $stmt = $pdo->prepare("INSERT INTO messages (sender_id, receiver_id, body) VALUES (?, ?, ?)");
-            $stmt->execute([$userId, $row['student_id'], $msg]);
+            // Notifications table (optional — may not exist)
+            try {
+                $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'placement_decision', ?)");
+                $stmt->execute([$row['student_id'], $msg]);
+            } catch (Exception $e) { /* table may not exist */ }
         }
 
-        // Audit log
-        $stmt = $pdo->prepare("INSERT INTO audit_log (user_id, action, table_affected, record_id, details) VALUES (?, ?, 'placements', ?, ?)");
-        $stmt->execute([$userId, 'placement_' . $action, $placementId, $comments]);
+        // Audit log (optional — may not exist)
+        try {
+            $stmt = $pdo->prepare("INSERT INTO audit_log (user_id, action, table_affected, record_id, details) VALUES (?, ?, 'placements', ?, ?)");
+            $stmt->execute([$userId, 'placement_' . $action, $placementId, $comments]);
+        } catch (Exception $e) { /* table may not exist */ }
 
         $actionMsg  = $action === 'approved'
             ? "✅ Placement approved successfully! Student has been notified."
@@ -70,16 +90,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-// ── Fetch all requests with filters ─────────────────────────────
+// ── Fetch requests visible to tutor (never show draft/awaiting_provider) ──
 $filterStatus = $_GET['status'] ?? '';
 $filterSearch = trim($_GET['search'] ?? '');
 
-$where  = [];
-$params = [];
+// Tutors only see placements that have passed provider approval
+$tutorVisibleStatuses = ['awaiting_tutor', 'approved', 'rejected', 'active', 'terminated'];
 
-if ($filterStatus) {
-    $where[]  = "p.status = ?";
-    $params[] = $filterStatus;
+$where  = ["p.status IN (" . implode(',', array_fill(0, count($tutorVisibleStatuses), '?')) . ")"];
+$params = $tutorVisibleStatuses;
+
+if ($filterStatus && in_array($filterStatus, $tutorVisibleStatuses)) {
+    // Replace the base status filter with the specific one
+    $where  = ["p.status = ?"];
+    $params = [$filterStatus];
 }
 
 if ($filterSearch) {
@@ -89,7 +113,7 @@ if ($filterSearch) {
     $params[] = "%$filterSearch%";
 }
 
-$whereSQL = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+$whereSQL = 'WHERE ' . implode(' AND ', $where);
 
 $stmt = $pdo->prepare("
     SELECT
@@ -106,16 +130,17 @@ $stmt = $pdo->prepare("
     JOIN companies c ON p.company_id = c.id
     $whereSQL
     ORDER BY
-        FIELD(p.status,'submitted','awaiting_tutor','awaiting_provider','approved','rejected') ASC,
+        FIELD(p.status,'awaiting_tutor','approved','active','rejected','terminated') ASC,
         p.created_at DESC
 ");
 $stmt->execute($params);
 $requests = $stmt->fetchAll();
 
-// Status counts for tabs
+// Status counts — only for tutor-visible statuses
 $stmt = $pdo->query("
     SELECT status, COUNT(*) as cnt
     FROM placements
+    WHERE status IN ('awaiting_tutor','approved','rejected','active','terminated')
     GROUP BY status
 ");
 $counts = [];
@@ -141,12 +166,11 @@ foreach ($stmt->fetchAll() as $row) {
         <div style="display:flex;gap:1rem;margin-bottom:1.5rem;flex-wrap:wrap;">
             <?php
             $tabs = [
-                ''                 => ['All Requests', count($requests) ?: array_sum($counts)],
-                'submitted'        => ['Submitted', $counts['submitted'] ?? 0],
-                'awaiting_provider'=> ['Awaiting Provider', $counts['awaiting_provider'] ?? 0],
-                'awaiting_tutor'   => ['Awaiting Tutor', $counts['awaiting_tutor'] ?? 0],
-                'approved'         => ['Approved', $counts['approved'] ?? 0],
-                'rejected'         => ['Rejected', $counts['rejected'] ?? 0],
+                ''               => ['All',             array_sum($counts)],
+                'awaiting_tutor' => ['Awaiting Approval', $counts['awaiting_tutor'] ?? 0],
+                'approved'       => ['Approved',         $counts['approved'] ?? 0],
+                'active'         => ['Active',           $counts['active'] ?? 0],
+                'rejected'       => ['Rejected',         $counts['rejected'] ?? 0],
             ];
             foreach ($tabs as $val => [$label, $cnt]):
                 $active = ($filterStatus === $val);
@@ -282,7 +306,7 @@ foreach ($stmt->fetchAll() as $row) {
                                         View
                                     </button>
 
-                                    <?php if (in_array($req['status'], ['submitted','awaiting_tutor','awaiting_provider'])): ?>
+                                    <?php if ($req['status'] === 'awaiting_tutor'): ?>
                                         <!-- Approve -->
                                         <button class="btn btn-success btn-sm"
                                                 onclick="openApprove(<?= $req['id'] ?>, '<?= htmlspecialchars(addslashes($req['student_name'])) ?>', '<?= htmlspecialchars(addslashes($req['company_name'])) ?>')">

@@ -115,6 +115,14 @@
       <a href="/inplace/provider/requests.php"
          class="nav-item <?= ($activePage === 'requests') ? 'active' : '' ?>">
         <span class="nav-icon">📋</span> Auth Requests
+        <?php if (!empty($pendingRequests) && $pendingRequests > 0): ?>
+          <span class="nav-badge"><?= (int)$pendingRequests ?></span>
+        <?php endif; ?>
+      </a>
+
+      <a href="/inplace/provider/students.php"
+         class="nav-item <?= ($activePage === 'students') ? 'active' : '' ?>">
+        <span class="nav-icon">👥</span> My Students
       </a>
 
       <a href="/inplace/provider/visits.php"
@@ -125,6 +133,14 @@
       <a href="/inplace/provider/messages.php"
          class="nav-item <?= ($activePage === 'messages') ? 'active' : '' ?>">
         <span class="nav-icon">💬</span> Messages
+        <?php if (!empty($unreadCount) && $unreadCount > 0): ?>
+          <span class="nav-badge"><?= (int)$unreadCount ?></span>
+        <?php endif; ?>
+      </a>
+
+      <a href="/inplace/provider/settings.php"
+         class="nav-item <?= ($activePage === 'settings') ? 'active' : '' ?>">
+        <span class="nav-icon">⚙️</span> Company Details
       </a>
 
 

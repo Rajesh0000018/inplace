@@ -503,6 +503,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <button type="submit" class="btn-primary" id="submitBtn">
                     Sign In
                 </button>
+
+                <p style="text-align:center;margin-top:1.25rem;font-size:0.9rem;color:#6b7a8d;">
+                    <a href="forgot-password.php" style="color:#e8a020;font-weight:600;text-decoration:none;">
+                        Forgot your password?
+                    </a>
+                </p>
             </form>
         </div>
     </div>
@@ -527,35 +533,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // ═══════════════════════════════════════════════════════
-        // reCAPTCHA Validation with Styled Error
-        // ═══════════════════════════════════════════════════════
+        // reCAPTCHA validation (only when widget is rendered)
+        <?php if (RECAPTCHA_SITE_KEY !== ''): ?>
         document.getElementById('loginForm').addEventListener('submit', function(e) {
             const recaptchaResponse = grecaptcha.getResponse();
             const errorMsg = document.getElementById('recaptchaError');
-            
             if (recaptchaResponse.length === 0) {
                 e.preventDefault();
-                
-                // Show error message
                 errorMsg.style.display = 'flex';
-                
-                // Scroll to error
                 errorMsg.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                
-                // Shake animation
                 errorMsg.classList.add('shake');
                 setTimeout(() => errorMsg.classList.remove('shake'), 500);
             } else {
-                // Hide error if reCAPTCHA is completed
                 errorMsg.style.display = 'none';
             }
         });
-        
-        // Hide error when user checks reCAPTCHA
         function onRecaptchaSuccess() {
             document.getElementById('recaptchaError').style.display = 'none';
         }
+        <?php endif; ?>
     </script>
 </body>
 </html>
