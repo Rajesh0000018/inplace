@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -h \"approved_by\\\\|approved_at\\\\|rejection_reason\" /c/xampp/htdocs/inplace/**/*.php)"
+      "Bash(grep -h \"approved_by\\\\|approved_at\\\\|rejection_reason\" /c/xampp/htdocs/inplace/**/*.php)",
+      "Bash(mysql -u root -e \"DESCRIBE inplace.placements;\")",
+      "Bash(grep -n \"SELECT\\\\|INTO users\\\\|$_ESSION\\\\[.user.\\\\]\" c:/xampp/htdocs/inplace/login.php)"
     ]
   }
 }

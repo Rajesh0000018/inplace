@@ -98,8 +98,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $companyName    = trim($_POST['company_name'] ?? '');
     $companyAddress = trim($_POST['company_address'] ?? '');
-    $companyCity    = trim($_POST['company_city'] ?? '');
-    $companyPostcode= trim($_POST['company_postcode'] ?? '');
+    $companyCity    = '';
+    $companyPostcode= '';
     $sector         = trim($_POST['sector'] ?? '');
     $supName        = trim($_POST['supervisor_name'] ?? '');
     $supEmail       = trim($_POST['supervisor_email'] ?? '');
@@ -125,7 +125,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $pdo->beginTransaction();
 
-            [$lat, $lng, $pcNormalised] = geocodeUkPostcode($companyPostcode);
+            // Use lat/lng from Nominatim autocomplete if provided, else fall back to postcode geocoding
+            $postLat = isset($_POST['company_lat']) && is_numeric($_POST['company_lat']) ? (float)$_POST['company_lat'] : null;
+            $postLng = isset($_POST['company_lng']) && is_numeric($_POST['company_lng']) ? (float)$_POST['company_lng'] : null;
+
+            if ($postLat !== null && $postLng !== null) {
+                $lat          = $postLat;
+                $lng          = $postLng;
+                $pcNormalised = normaliseUkPostcode($companyPostcode);
+            } else {
+                [$lat, $lng, $pcNormalised] = geocodeUkPostcode($companyPostcode);
+            }
 
             // Insert or find company
             $stmt = $pdo->prepare("SELECT id, latitude, longitude FROM companies WHERE name = ? AND COALESCE(postcode,'') = ? LIMIT 1");
@@ -342,26 +352,26 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                                    value="<?= htmlspecialchars($_POST['company_name'] ?? '') ?>">
                         </div>
 
-                        <div class="form-group">
-                            <label>UK Postcode <span style="color:var(--danger);">*</span></label>
-                            <input type="text" name="company_postcode" required
-                                   placeholder="e.g., LE1 7RH"
-                                   value="<?= htmlspecialchars($_POST['company_postcode'] ?? '') ?>">
-                            <small style="color:var(--muted);">We use this to save latitude/longitude for navigation.</small>
-                        </div>
-
-                        <div class="form-group">
-                            <label>Company City / Town <span style="color:var(--danger);">*</span></label>
-                            <input type="text" name="company_city" required
-                                   placeholder="e.g., Derby"
-                                   value="<?= htmlspecialchars($_POST['company_city'] ?? '') ?>">
-                        </div>
-
                         <div class="form-group full-col">
                             <label>Full Company Address</label>
-                            <input type="text" name="company_address"
-                                   placeholder="Street, City, Postcode"
-                                   value="<?= htmlspecialchars($_POST['company_address'] ?? '') ?>">
+                            <div style="position:relative;">
+                                <input type="text" id="addressSearch" name="company_address"
+                                       autocomplete="off"
+                                       placeholder="Start typing a street, city or postcode…"
+                                       style="width:100%;"
+                                       value="<?= htmlspecialchars($_POST['company_address'] ?? '') ?>">
+                                <div id="addressSuggestions"
+                                     style="display:none;position:absolute;top:100%;left:0;right:0;
+                                            background:white;border:2px solid var(--border);
+                                            border-top:none;border-radius:0 0 10px 10px;
+                                            box-shadow:0 4px 12px rgba(0,0,0,0.15);
+                                            z-index:999;max-height:220px;overflow-y:auto;"></div>
+                            </div>
+                            <input type="hidden" name="company_lat" id="company_lat"
+                                   value="<?= htmlspecialchars($_POST['company_lat'] ?? '') ?>">
+                            <input type="hidden" name="company_lng" id="company_lng"
+                                   value="<?= htmlspecialchars($_POST['company_lng'] ?? '') ?>">
+                            <small style="color:var(--muted);">Type an address or postcode and select from the suggestions.</small>
                         </div>
 
                         <div class="form-group">
@@ -602,6 +612,71 @@ document.querySelector('form').addEventListener('submit', function(e) {
         alert('End date must be after start date.');
     }
 });
+
+// ── Nominatim address autocomplete ─────────────────────────────────
+(function () {
+    const addrInput   = document.getElementById('addressSearch');
+    const addrDrop    = document.getElementById('addressSuggestions');
+    if (!addrInput) return;
+
+    let timer = null;
+
+    addrInput.addEventListener('input', function () {
+        clearTimeout(timer);
+        const q = this.value.trim();
+        if (q.length < 3) { addrDrop.style.display = 'none'; return; }
+        timer = setTimeout(() => fetchSuggestions(q), 350);
+    });
+
+    document.addEventListener('click', function (e) {
+        if (!addrInput.contains(e.target) && !addrDrop.contains(e.target)) {
+            addrDrop.style.display = 'none';
+        }
+    });
+
+    function fetchSuggestions(q) {
+        const url = 'https://nominatim.openstreetmap.org/search?format=json&countrycodes=gb&addressdetails=1&limit=6&q=' + encodeURIComponent(q);
+        fetch(url, { headers: { 'Accept-Language': 'en', 'User-Agent': 'inplace-student-form/1.0' } })
+            .then(r => r.json())
+            .then(data => showSuggestions(data))
+            .catch(() => { addrDrop.style.display = 'none'; });
+    }
+
+    function showSuggestions(results) {
+        addrDrop.innerHTML = '';
+        if (!results || results.length === 0) { addrDrop.style.display = 'none'; return; }
+        results.forEach(item => {
+            const div = document.createElement('div');
+            div.style.cssText = 'padding:0.625rem 1rem;cursor:pointer;font-size:0.875rem;border-bottom:1px solid #f0f0f0;color:#2c3e50;';
+            div.textContent = item.display_name;
+            div.addEventListener('mouseenter', () => div.style.background = '#f8f5f0');
+            div.addEventListener('mouseleave', () => div.style.background = '');
+            div.addEventListener('mousedown', e => e.preventDefault()); // prevent blur before click
+            div.addEventListener('click', () => selectSuggestion(item));
+            addrDrop.appendChild(div);
+        });
+        addrDrop.style.display = 'block';
+    }
+
+    function selectSuggestion(item) {
+        addrInput.value = item.display_name;
+        document.getElementById('company_lat').value = item.lat;
+        document.getElementById('company_lng').value = item.lon;
+
+        // Auto-fill city and postcode from address details (only if field is empty)
+        const addr = item.address || {};
+        const city     = addr.city || addr.town || addr.village || addr.county || '';
+        const postcode = addr.postcode || '';
+
+        const cityInput = document.querySelector('[name="company_city"]');
+        if (cityInput && !cityInput.value && city) cityInput.value = city;
+
+        const pcInput = document.querySelector('[name="company_postcode"]');
+        if (pcInput && !pcInput.value && postcode) pcInput.value = postcode;
+
+        addrDrop.style.display = 'none';
+    }
+}());
 </script>
 
 <?php include '../includes/footer.php'; ?>

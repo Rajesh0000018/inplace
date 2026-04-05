@@ -90,6 +90,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
+// ── Handle change request approve / reject ───────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cr_action'])) {
+    $crId     = (int)($_POST['cr_id'] ?? 0);
+    $crAction = $_POST['cr_action'];
+    $crComment= trim($_POST['cr_comment'] ?? '');
+
+    if (in_array($crAction, ['approve','reject']) && $crId) {
+        $stmt = $pdo->prepare("
+            SELECT pcr.*,
+                   u.email AS student_email, u.full_name AS student_name, u.id AS s_id
+            FROM placement_change_requests pcr
+            JOIN users u ON pcr.student_id = u.id
+            WHERE pcr.id = ? AND pcr.status = 'pending_tutor'
+        ");
+        $stmt->execute([$crId]);
+        $cr = $stmt->fetch();
+
+        if ($cr) {
+            $newStatus = $crAction === 'approve' ? 'approved' : 'rejected';
+            $pdo->prepare("
+                UPDATE placement_change_requests
+                SET status = ?, tutor_comment = ?, updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$newStatus, $crComment, $crId]);
+
+            $msgText = $crAction === 'approve'
+                ? "Your placement change request (" . ucwords(str_replace('_',' ',$cr['change_type'])) . ") has been approved! Please contact your tutor to discuss next steps." . ($crComment ? " Tutor note: $crComment" : "")
+                : "Your placement change request (" . ucwords(str_replace('_',' ',$cr['change_type'])) . ") was not approved." . ($crComment ? " Tutor feedback: $crComment" : " Please contact your tutor for more information.");
+
+            // Message student
+            try {
+                $tCol = null;
+                $s2 = $pdo->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='messages' AND COLUMN_NAME IN (?,?,?,?)");
+                $s2->execute(['created_at','sent_at','timestamp','date_sent']);
+                foreach (['created_at','sent_at','timestamp','date_sent'] as $c) {
+                    if (in_array($c, $s2->fetchAll(PDO::FETCH_COLUMN), true)) { $tCol = $c; break; }
+                }
+                if ($tCol) {
+                    $pdo->prepare("INSERT INTO messages (sender_id, receiver_id, body, `$tCol`, is_read) VALUES (?, ?, ?, NOW(), 0)")->execute([$userId, $cr['s_id'], $msgText]);
+                } else {
+                    $pdo->prepare("INSERT INTO messages (sender_id, receiver_id, body, is_read) VALUES (?, ?, ?, 0)")->execute([$userId, $cr['s_id'], $msgText]);
+                }
+            } catch (Exception $e) { error_log('CR tutor message: ' . $e->getMessage()); }
+
+            try {
+                $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'change_request_decision', ?)")->execute([$cr['s_id'], $msgText]);
+            } catch (Exception $e) {}
+
+            $actionMsg  = $crAction === 'approve' ? '✅ Change request approved. Student has been notified.' : '❌ Change request rejected. Student has been notified.';
+            $actionType = $crAction === 'approve' ? 'success' : 'danger';
+        }
+    }
+}
+
 // ── Fetch requests visible to tutor (never show draft/awaiting_provider) ──
 $filterStatus = $_GET['status'] ?? '';
 $filterSearch = trim($_GET['search'] ?? '');
@@ -135,6 +189,27 @@ $stmt = $pdo->prepare("
 ");
 $stmt->execute($params);
 $requests = $stmt->fetchAll();
+
+// ── Change requests awaiting tutor ──────────────────────────────
+$changeRequests = [];
+try {
+    $stmt = $pdo->query("
+        SELECT pcr.*,
+               u.full_name AS student_name, u.email AS student_email,
+               c.name AS company_name
+        FROM placement_change_requests pcr
+        JOIN placements p ON pcr.placement_id = p.id
+        JOIN users u ON pcr.student_id = u.id
+        JOIN companies c ON p.company_id = c.id
+        ORDER BY FIELD(pcr.status,'pending_tutor','pending_provider','approved','rejected'), pcr.created_at DESC
+    ");
+    $changeRequests = $stmt->fetchAll();
+} catch (Exception $e) { /* table may not exist yet */ }
+
+$pendingChangeTutor = 0;
+foreach ($changeRequests as $cr) {
+    if ($cr['status'] === 'pending_tutor') $pendingChangeTutor++;
+}
 
 // Status counts — only for tutor-visible statuses
 $stmt = $pdo->query("
@@ -350,6 +425,98 @@ foreach ($stmt->fetchAll() as $row) {
             <?php endif; ?>
         </div>
 
+        <!-- ── Change Requests Panel ────────────────────────────── -->
+        <div class="panel" style="margin-top:2rem;">
+            <div class="panel-header">
+                <div>
+                    <h3>🔄 Placement Change Requests</h3>
+                    <p>Students requesting changes to approved placements</p>
+                </div>
+                <?php if ($pendingChangeTutor > 0): ?>
+                <span class="badge badge-review"><?= $pendingChangeTutor ?> Awaiting You</span>
+                <?php endif; ?>
+            </div>
+
+            <?php if (empty($changeRequests)): ?>
+            <div style="text-align:center;padding:3rem 2rem;">
+                <div style="font-size:2.5rem;margin-bottom:0.75rem;">🔄</div>
+                <p style="color:var(--muted);">No change requests submitted yet.</p>
+            </div>
+            <?php else: ?>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Student</th>
+                            <th>Company</th>
+                            <th>Change Type</th>
+                            <th>Justification</th>
+                            <th>Proposed Details</th>
+                            <th>Provider Comment</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($changeRequests as $cr):
+                            $crBadge = match($cr['status']) {
+                                'pending_provider' => 'open',
+                                'pending_tutor'    => 'review',
+                                'approved'         => 'approved',
+                                'rejected'         => 'rejected',
+                                default            => 'pending'
+                            };
+                            $crTypeLabel = match($cr['change_type']) {
+                                'end_date'   => 'Change End Date',
+                                'start_date' => 'Change Start Date',
+                                'role'       => 'Change Role',
+                                'supervisor' => 'Change Supervisor',
+                                'salary'     => 'Change Salary / Terms',
+                                'transfer'   => 'Transfer Company',
+                                default      => ucwords(str_replace('_',' ',$cr['change_type'])),
+                            };
+                        ?>
+                        <tr>
+                            <td>
+                                <div style="font-weight:500;"><?= htmlspecialchars($cr['student_name']) ?></div>
+                                <div style="font-size:0.8125rem;color:var(--muted);"><?= htmlspecialchars($cr['student_email']) ?></div>
+                            </td>
+                            <td style="font-size:0.875rem;"><?= htmlspecialchars($cr['company_name']) ?></td>
+                            <td><span class="type-chip"><?= htmlspecialchars($crTypeLabel) ?></span></td>
+                            <td style="max-width:180px;font-size:0.875rem;"><?= nl2br(htmlspecialchars($cr['justification'])) ?></td>
+                            <td style="max-width:160px;font-size:0.875rem;color:var(--muted);">
+                                <?= $cr['proposed_details'] ? nl2br(htmlspecialchars($cr['proposed_details'])) : '—' ?>
+                            </td>
+                            <td style="font-size:0.8125rem;color:var(--muted);">
+                                <?= $cr['provider_comment'] ? htmlspecialchars($cr['provider_comment']) : '—' ?>
+                            </td>
+                            <td><span class="badge badge-<?= $crBadge ?>"><?= ucwords(str_replace('_',' ',$cr['status'])) ?></span></td>
+                            <td>
+                                <?php if ($cr['status'] === 'pending_tutor'): ?>
+                                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                                    <button class="btn btn-success btn-sm"
+                                            onclick="openTutorCr(<?= $cr['id'] ?>,'approve')">
+                                        ✓ Approve
+                                    </button>
+                                    <button class="btn btn-danger btn-sm"
+                                            onclick="openTutorCr(<?= $cr['id'] ?>,'reject')">
+                                        ✗ Reject
+                                    </button>
+                                </div>
+                                <?php else: ?>
+                                <span style="font-size:0.8125rem;color:var(--muted);">
+                                    <?= $cr['tutor_comment'] ? htmlspecialchars($cr['tutor_comment']) : '—' ?>
+                                </span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+        </div>
+
     </div><!-- /page-content -->
 </div><!-- /main -->
 
@@ -436,15 +603,57 @@ function openReject(id, student) {
 
 function closeModals() {
     document.getElementById('approveModal').style.display = 'none';
-    document.getElementById('rejectModal').style.display = 'none';
+    document.getElementById('rejectModal').style.display  = 'none';
+    const cm = document.getElementById('tutorCrModal');
+    if (cm) cm.style.display = 'none';
 }
 
 // Close on outside click
-['approveModal','rejectModal'].forEach(id => {
-    document.getElementById(id).addEventListener('click', function(e) {
-        if (e.target === this) closeModals();
-    });
+['approveModal','rejectModal','tutorCrModal'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', function(e) { if (e.target === this) closeModals(); });
 });
+
+function openTutorCr(crId, action) {
+    document.getElementById('tutorCrId').value     = crId;
+    document.getElementById('tutorCrAction').value = action;
+    const title  = document.getElementById('tutorCrTitle');
+    const submit = document.getElementById('tutorCrSubmit');
+    if (action === 'approve') {
+        title.textContent  = '✅ Approve Change Request';
+        submit.textContent = '✓ Confirm Approval';
+        submit.className   = 'btn btn-success';
+    } else {
+        title.textContent  = '❌ Reject Change Request';
+        submit.textContent = '✗ Confirm Rejection';
+        submit.className   = 'btn btn-danger';
+    }
+    document.getElementById('tutorCrModal').style.display = 'flex';
+}
 </script>
+
+<!-- Tutor Change Request Modal -->
+<div id="tutorCrModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);
+     z-index:1001;align-items:center;justify-content:center;">
+    <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;
+                width:100%;max-width:480px;box-shadow:0 20px 60px rgba(0,0,0,0.2);">
+        <h3 id="tutorCrTitle" style="font-family:'Playfair Display',serif;font-size:1.375rem;color:var(--navy);margin-bottom:1.5rem;"></h3>
+        <form method="POST">
+            <input type="hidden" name="cr_id"     id="tutorCrId">
+            <input type="hidden" name="cr_action" id="tutorCrAction">
+            <div class="form-group" style="margin-bottom:1.5rem;">
+                <label>Comment for student (optional)</label>
+                <textarea name="cr_comment" rows="4"
+                          placeholder="Add a note for the student..."
+                          style="padding:0.875rem;border:2px solid var(--border);border-radius:var(--radius-sm);
+                                 width:100%;font-family:inherit;font-size:0.9375rem;background:var(--cream);"></textarea>
+            </div>
+            <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+                <button type="button" class="btn btn-ghost" onclick="closeModals()">Cancel</button>
+                <button type="submit" id="tutorCrSubmit" class="btn btn-success">Confirm</button>
+            </div>
+        </form>
+    </div>
+</div>
 
 <?php include '../includes/footer.php'; ?>

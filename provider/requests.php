@@ -136,6 +136,136 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+// ── Handle change request approve/reject ────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cr_action'])) {
+    $crId      = (int)($_POST['cr_id'] ?? 0);
+    $crAction  = $_POST['cr_action'];
+    $crComment = trim($_POST['cr_comment'] ?? '');
+
+    if (in_array($crAction, ['approve','reject']) && $crId) {
+        // Verify this change request belongs to this provider's company
+        $stmt = $pdo->prepare("
+            SELECT pcr.*, p.company_id, p.tutor_id,
+                   u.email AS student_email, u.full_name AS student_name
+            FROM placement_change_requests pcr
+            JOIN placements p ON pcr.placement_id = p.id
+            JOIN users u ON pcr.student_id = u.id
+            WHERE pcr.id = ? AND p.company_id = ? AND pcr.status = 'pending_provider'
+        ");
+        $stmt->execute([$crId, $provider['company_id']]);
+        $cr = $stmt->fetch();
+
+        if ($cr) {
+            if ($crAction === 'approve') {
+                $stmt = $pdo->prepare("
+                    UPDATE placement_change_requests
+                    SET status = 'pending_tutor', provider_comment = ?, updated_at = NOW()
+                    WHERE id = ?
+                ");
+                $stmt->execute([$crComment, $crId]);
+                $actionMsg  = 'Change request approved and forwarded to the tutor for final review.';
+                $actionType = 'success';
+
+                // Email tutor(s)
+                $scheme   = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                $host     = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                $tutorUrl = $scheme . '://' . $host . '/inplace/tutor/requests.php';
+
+                if ($cr['tutor_id']) {
+                    $ts = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
+                    $ts->execute([$cr['tutor_id']]);
+                    $tutors = [$ts->fetch()];
+                } else {
+                    $ts = $pdo->query("SELECT email, full_name FROM users WHERE role='tutor' AND is_active=1");
+                    $tutors = $ts->fetchAll();
+                }
+
+                if (!empty($tutors)) {
+                    loadAppConfig($pdo);
+                    $mailCfg = require __DIR__ . '/../config/email_config.php';
+                    $changeTypeLabel = ucwords(str_replace('_', ' ', $cr['change_type']));
+
+                    foreach ($tutors as $tutor) {
+                        if (!$tutor || !$tutor['email']) continue;
+                        $htmlBody = "
+                        <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+                          <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
+                            <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
+                            <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Placement Change Request — Awaiting Your Approval</p>
+                          </div>
+                          <div style='padding:2rem;'>
+                            <p style='color:#374151;font-size:1rem;margin-bottom:1rem;'>Dear " . htmlspecialchars($tutor['full_name']) . ",</p>
+                            <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
+                              The placement provider has approved a change request submitted by
+                              <strong>" . htmlspecialchars($cr['student_name']) . "</strong>.
+                              It now requires <strong>your approval</strong> to proceed.
+                            </p>
+                            <table style='width:100%;border-collapse:collapse;margin-bottom:1.5rem;'>
+                              <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;width:40%;border-bottom:1px solid #e2e8f0;'>Student</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($cr['student_name']) . "</td></tr>
+                              <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Change Type</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($changeTypeLabel) . "</td></tr>
+                              <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>Justification</td><td style='padding:0.75rem 1rem;color:#374151;'>" . nl2br(htmlspecialchars($cr['justification'])) . "</td></tr>
+                            </table>
+                            <div style='text-align:center;margin:2rem 0;'>
+                              <a href='$tutorUrl' style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;'>Review Change Request</a>
+                            </div>
+                            <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
+                          </div>
+                        </div>";
+
+                        $mail = new PHPMailer(true);
+                        try {
+                            $mail->isSMTP();
+                            $mail->Host       = $mailCfg['smtp_host'];
+                            $mail->SMTPAuth   = true;
+                            $mail->Username   = $mailCfg['smtp_user'];
+                            $mail->Password   = $mailCfg['smtp_pass'];
+                            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                            $mail->Port       = $mailCfg['smtp_port'];
+                            $mail->CharSet    = 'UTF-8';
+                            $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                            $mail->addAddress($tutor['email'], $tutor['full_name']);
+                            $mail->isHTML(true);
+                            $mail->Subject = 'InPlace - Placement Change Request Awaiting Your Approval: ' . $cr['student_name'];
+                            $mail->Body    = $htmlBody;
+                            $mail->AltBody = "Change request from {$cr['student_name']} needs your approval. Review at: $tutorUrl";
+                            $mail->send();
+                        } catch (MailException $ex) {
+                            error_log('Tutor change request email failed: ' . $mail->ErrorInfo);
+                        }
+                    }
+                }
+
+            } else {
+                // Reject
+                $stmt = $pdo->prepare("
+                    UPDATE placement_change_requests
+                    SET status = 'rejected', provider_comment = ?, updated_at = NOW()
+                    WHERE id = ?
+                ");
+                $stmt->execute([$crComment, $crId]);
+                $actionMsg  = 'Change request rejected. The student has been notified.';
+                $actionType = 'danger';
+
+                // Notify student via message
+                try {
+                    $tCol = null;
+                    $s2 = $pdo->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='messages' AND COLUMN_NAME IN (?,?,?,?)");
+                    $s2->execute(['created_at','sent_at','timestamp','date_sent']);
+                    foreach (['created_at','sent_at','timestamp','date_sent'] as $c) {
+                        if (in_array($c, $s2->fetchAll(PDO::FETCH_COLUMN), true)) { $tCol = $c; break; }
+                    }
+                    $msgText = "Your placement change request (" . ucwords(str_replace('_',' ',$cr['change_type'])) . ") was not approved by the provider." . ($crComment ? " Reason: $crComment" : "");
+                    if ($tCol) {
+                        $pdo->prepare("INSERT INTO messages (sender_id, receiver_id, body, `$tCol`, is_read) VALUES (?, ?, ?, NOW(), 0)")->execute([$userId, $cr['student_id'], $msgText]);
+                    } else {
+                        $pdo->prepare("INSERT INTO messages (sender_id, receiver_id, body, is_read) VALUES (?, ?, ?, 0)")->execute([$userId, $cr['student_id'], $msgText]);
+                    }
+                } catch (Exception $e) { error_log('CR reject message: ' . $e->getMessage()); }
+            }
+        }
+    }
+}
+
 // Fetch all placement requests for this company
 $stmt = $pdo->prepare("
     SELECT 
@@ -175,6 +305,27 @@ foreach ($requests as $req) {
 
 $unreadCount = 0;
 $pendingRequests = $pendingCount;
+
+// Fetch change requests for this company
+$changeRequests = [];
+$pendingChangeCount = 0;
+try {
+    $stmt = $pdo->prepare("
+        SELECT pcr.*,
+               u.full_name AS student_name,
+               u.email     AS student_email
+        FROM placement_change_requests pcr
+        JOIN placements p ON pcr.placement_id = p.id
+        JOIN users u ON pcr.student_id = u.id
+        WHERE p.company_id = ?
+        ORDER BY FIELD(pcr.status,'pending_provider','pending_tutor','approved','rejected'), pcr.created_at DESC
+    ");
+    $stmt->execute([$provider['company_id']]);
+    $changeRequests = $stmt->fetchAll();
+    foreach ($changeRequests as $cr) {
+        if ($cr['status'] === 'pending_provider') $pendingChangeCount++;
+    }
+} catch (Exception $e) { /* table may not exist yet */ }
 ?>
 <?php include '../includes/header.php'; ?>
 
@@ -360,6 +511,94 @@ $pendingRequests = $pendingCount;
             <?php endif; ?>
         </div>
 
+        <!-- ── Change Requests Panel ────────────────────────────── -->
+        <div class="panel" style="margin-top:2rem;">
+            <div class="panel-header">
+                <div>
+                    <h3>🔄 Placement Change Requests</h3>
+                    <p>Students requesting changes to approved placements at your company</p>
+                </div>
+                <?php if ($pendingChangeCount > 0): ?>
+                <span class="badge badge-pending"><?= $pendingChangeCount ?> Pending</span>
+                <?php endif; ?>
+            </div>
+
+            <?php if (empty($changeRequests)): ?>
+            <div style="text-align:center;padding:3rem 2rem;">
+                <div style="font-size:2.5rem;margin-bottom:0.75rem;">🔄</div>
+                <p style="color:var(--muted);">No change requests yet.</p>
+            </div>
+            <?php else: ?>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Student</th>
+                            <th>Change Type</th>
+                            <th>Justification</th>
+                            <th>Proposed Details</th>
+                            <th>Status</th>
+                            <th>Submitted</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($changeRequests as $cr):
+                            $crBadge = match($cr['status']) {
+                                'pending_provider' => 'pending',
+                                'pending_tutor'    => 'review',
+                                'approved'         => 'approved',
+                                'rejected'         => 'rejected',
+                                default            => 'open'
+                            };
+                            $crTypeLabel = match($cr['change_type']) {
+                                'end_date'   => 'Change End Date',
+                                'start_date' => 'Change Start Date',
+                                'role'       => 'Change Role',
+                                'supervisor' => 'Change Supervisor',
+                                'salary'     => 'Change Salary / Terms',
+                                'transfer'   => 'Transfer Company',
+                                default      => ucwords(str_replace('_',' ',$cr['change_type'])),
+                            };
+                        ?>
+                        <tr>
+                            <td>
+                                <div style="font-weight:500;"><?= htmlspecialchars($cr['student_name']) ?></div>
+                                <div style="font-size:0.8125rem;color:var(--muted);"><?= htmlspecialchars($cr['student_email']) ?></div>
+                            </td>
+                            <td><span class="type-chip"><?= htmlspecialchars($crTypeLabel) ?></span></td>
+                            <td style="max-width:200px;font-size:0.875rem;"><?= nl2br(htmlspecialchars($cr['justification'])) ?></td>
+                            <td style="max-width:180px;font-size:0.875rem;color:var(--muted);">
+                                <?= $cr['proposed_details'] ? nl2br(htmlspecialchars($cr['proposed_details'])) : '—' ?>
+                            </td>
+                            <td><span class="badge badge-<?= $crBadge ?>"><?= ucwords(str_replace('_',' ',$cr['status'])) ?></span></td>
+                            <td style="font-size:0.8125rem;color:var(--muted);"><?= date('d M Y', strtotime($cr['created_at'])) ?></td>
+                            <td>
+                                <?php if ($cr['status'] === 'pending_provider'): ?>
+                                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                                    <button class="btn btn-success btn-sm"
+                                            onclick="openCrModal(<?= $cr['id'] ?>,'approve')">
+                                        ✓ Approve
+                                    </button>
+                                    <button class="btn btn-danger btn-sm"
+                                            onclick="openCrModal(<?= $cr['id'] ?>,'reject')">
+                                        ✗ Reject
+                                    </button>
+                                </div>
+                                <?php else: ?>
+                                <span style="font-size:0.8125rem;color:var(--muted);">
+                                    <?= $cr['provider_comment'] ? htmlspecialchars($cr['provider_comment']) : '—' ?>
+                                </span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+        </div>
+
     </div>
 </div>
 
@@ -397,7 +636,55 @@ $pendingRequests = $pendingCount;
     </div>
 </div>
 
+<!-- Change Request Modal -->
+<div id="crModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);
+                          z-index:1001;align-items:center;justify-content:center;">
+    <div class="panel" style="width:90%;max-width:480px;margin:0;">
+        <div class="panel-header">
+            <h3 id="crModalTitle">Review Change Request</h3>
+        </div>
+        <div class="panel-body">
+            <form method="POST" id="crForm">
+                <input type="hidden" name="cr_id" id="crId">
+                <input type="hidden" name="cr_action" id="crActionInput">
+                <div class="form-group">
+                    <label>Comment (optional)</label>
+                    <textarea name="cr_comment" rows="4"
+                              placeholder="Add a comment for the student and tutor..."
+                              style="padding:0.875rem 1rem;border:2px solid var(--border);
+                                     border-radius:var(--radius-sm);width:100%;font-family:inherit;
+                                     font-size:0.9375rem;background:var(--cream);resize:vertical;"></textarea>
+                </div>
+                <div style="display:flex;justify-content:flex-end;gap:1rem;margin-top:1.5rem;">
+                    <button type="button" onclick="document.getElementById('crModal').style.display='none'" class="btn btn-ghost">Cancel</button>
+                    <button type="submit" id="crSubmitBtn" class="btn btn-primary">Confirm</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 <script>
+function openCrModal(crId, action) {
+    document.getElementById('crId').value = crId;
+    document.getElementById('crActionInput').value = action;
+    const title  = document.getElementById('crModalTitle');
+    const submit = document.getElementById('crSubmitBtn');
+    if (action === 'approve') {
+        title.textContent  = '✅ Approve Change Request';
+        submit.textContent = 'Approve & Forward to Tutor';
+        submit.className   = 'btn btn-success';
+    } else {
+        title.textContent  = '❌ Reject Change Request';
+        submit.textContent = 'Reject Request';
+        submit.className   = 'btn btn-danger';
+    }
+    document.getElementById('crModal').style.display = 'flex';
+}
+document.getElementById('crModal')?.addEventListener('click', function(e) {
+    if (e.target === this) this.style.display = 'none';
+});
+
 function showFeedbackModal(placementId) {
     document.getElementById('feedbackPlacementId').value = placementId;
     document.getElementById('feedbackModal').style.display = 'flex';

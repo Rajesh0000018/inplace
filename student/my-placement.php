@@ -52,6 +52,21 @@ if ($placement) {
     $monthsTotal   = round($totalDays / 30, 1);
 }
 
+// ── Change requests for this placement ──────────────────────────
+$changeRequests = [];
+if ($placement) {
+    // Ensure table exists before querying
+    try {
+        $stmt = $pdo->prepare("
+            SELECT * FROM placement_change_requests
+            WHERE placement_id = ? AND student_id = ?
+            ORDER BY created_at DESC
+        ");
+        $stmt->execute([$placement['id'], $userId]);
+        $changeRequests = $stmt->fetchAll();
+    } catch (Exception $e) { /* table may not exist yet */ }
+}
+
 // ── Documents uploaded by this student ──────────────────────────
 $documents = [];
 if ($placement) {
@@ -77,12 +92,32 @@ if ($placement) {
     $reflections = $stmt->fetchAll();
 }
 ?>
+<?php
+// Flash messages from change request action
+$changeSuccess = $_SESSION['change_success'] ?? '';
+$changeError   = $_SESSION['change_error']   ?? '';
+unset($_SESSION['change_success'], $_SESSION['change_error']);
+?>
 <?php include '../includes/header.php'; ?>
 
 <div class="main">
     <?php include '../includes/topbar.php'; ?>
 
     <div class="page-content">
+
+        <?php if ($changeSuccess): ?>
+        <div style="background:var(--success-bg);border:1px solid #6ee7b7;border-radius:var(--radius);
+                    padding:1.25rem 2rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem;">
+            <span style="font-size:1.5rem;">✅</span>
+            <p style="color:var(--success);font-weight:500;"><?= htmlspecialchars($changeSuccess) ?></p>
+        </div>
+        <?php endif; ?>
+        <?php if ($changeError): ?>
+        <div style="background:var(--danger-bg);border:1px solid #fca5a5;border-radius:var(--radius);
+                    padding:1.25rem 2rem;margin-bottom:1.5rem;">
+            <p style="color:var(--danger);font-weight:500;">⚠️ <?= htmlspecialchars($changeError) ?></p>
+        </div>
+        <?php endif; ?>
 
         <?php if ($placement): ?>
 
@@ -271,6 +306,91 @@ if ($placement) {
         </div><!-- /two-col -->
 
 
+        <!-- ═══════════════════════════════════════════════════════
+             CHANGE REQUESTS HISTORY
+        ════════════════════════════════════════════════════════ -->
+        <div class="panel" style="margin-top:1.5rem;">
+            <div class="panel-header">
+                <div>
+                    <h3>Change Requests</h3>
+                    <p>History of placement change requests you have submitted</p>
+                </div>
+                <button class="btn btn-ghost btn-sm"
+                        onclick="document.getElementById('changeModal').style.display='flex'">
+                    + New Request
+                </button>
+            </div>
+
+            <?php if (empty($changeRequests)): ?>
+            <div style="text-align:center;padding:2.5rem 2rem;">
+                <div style="font-size:2.5rem;margin-bottom:0.75rem;">🔄</div>
+                <p style="color:var(--muted);">No change requests submitted yet.</p>
+            </div>
+            <?php else: ?>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Type of Change</th>
+                            <th>Justification</th>
+                            <th>Proposed Details</th>
+                            <th>Status</th>
+                            <th>Submitted</th>
+                            <th>Comments</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($changeRequests as $cr):
+                            $crBadge = match($cr['status']) {
+                                'pending_provider' => 'pending',
+                                'pending_tutor'    => 'review',
+                                'approved'         => 'approved',
+                                'rejected'         => 'rejected',
+                                default            => 'open'
+                            };
+                            $crLabel = match($cr['change_type']) {
+                                'end_date'   => 'Extend / Change End Date',
+                                'start_date' => 'Change Start Date',
+                                'role'       => 'Change Role',
+                                'supervisor' => 'Change Supervisor',
+                                'transfer'   => 'Transfer Company',
+                                'salary'     => 'Change Salary / Terms',
+                                default      => ucwords(str_replace('_',' ',$cr['change_type'])),
+                            };
+                        ?>
+                        <tr>
+                            <td><span class="type-chip"><?= htmlspecialchars($crLabel) ?></span></td>
+                            <td style="max-width:220px;font-size:0.875rem;">
+                                <?= nl2br(htmlspecialchars($cr['justification'])) ?>
+                            </td>
+                            <td style="max-width:180px;font-size:0.875rem;color:var(--muted);">
+                                <?= $cr['proposed_details'] ? nl2br(htmlspecialchars($cr['proposed_details'])) : '—' ?>
+                            </td>
+                            <td><span class="badge badge-<?= $crBadge ?>">
+                                <?= ucwords(str_replace('_',' ',$cr['status'])) ?>
+                            </span></td>
+                            <td style="font-size:0.8125rem;color:var(--muted);">
+                                <?= date('d M Y', strtotime($cr['created_at'])) ?>
+                            </td>
+                            <td style="font-size:0.8125rem;">
+                                <?php if ($cr['provider_comment']): ?>
+                                    <p><strong>Provider:</strong> <?= htmlspecialchars($cr['provider_comment']) ?></p>
+                                <?php endif; ?>
+                                <?php if ($cr['tutor_comment']): ?>
+                                    <p><strong>Tutor:</strong> <?= htmlspecialchars($cr['tutor_comment']) ?></p>
+                                <?php endif; ?>
+                                <?php if (!$cr['provider_comment'] && !$cr['tutor_comment']): ?>
+                                    <span style="color:var(--muted);">—</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+        </div>
+
         <?php else: ?>
         <!-- ═══════════════════════════════════════════════════════
              NO PLACEMENT YET
@@ -393,37 +513,57 @@ if ($placement) {
 <div id="changeModal" style="display:none;position:fixed;inset:0;
      background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
     <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;
-                width:100%;max-width:520px;box-shadow:0 20px 60px rgba(0,0,0,0.2);">
+                width:100%;max-width:560px;box-shadow:0 20px 60px rgba(0,0,0,0.2);
+                max-height:90vh;overflow-y:auto;">
         <h3 style="font-family:'Playfair Display',serif;font-size:1.375rem;
-                   color:var(--navy);margin-bottom:1.5rem;">Request Placement Change</h3>
+                   color:var(--navy);margin-bottom:0.5rem;">Request Placement Change</h3>
+        <p style="color:var(--muted);font-size:0.875rem;margin-bottom:1.5rem;">
+            Your request will be sent to the placement provider for approval, then your tutor.
+        </p>
         <form method="POST" action="/inplace/student/actions/request-change.php">
+            <input type="hidden" name="placement_id" value="<?= $placement['id'] ?? '' ?>">
+
             <div class="form-group" style="margin-bottom:1.25rem;">
-                <label>Type of Change</label>
-                <select name="change_type"
+                <label>Type of Change <span style="color:var(--danger);">*</span></label>
+                <select name="change_type" required
                         style="padding:0.875rem 1rem;border:2px solid var(--border);
                                border-radius:var(--radius-sm);width:100%;font-family:inherit;
                                font-size:0.9375rem;background:var(--cream);">
-                    <option value="end_date">Extend End Date</option>
+                    <option value="">— Select change type —</option>
+                    <option value="end_date">Extend / Change End Date</option>
+                    <option value="start_date">Change Start Date</option>
                     <option value="role">Change Role (same company)</option>
                     <option value="supervisor">Change Supervisor</option>
+                    <option value="salary">Change Salary / Terms</option>
                     <option value="transfer">Transfer to Different Company</option>
                 </select>
             </div>
-            <div class="form-group" style="margin-bottom:1.5rem;">
-                <label>Justification / Details</label>
-                <textarea name="justification" rows="4"
-                          placeholder="Explain why you need this change..."
+
+            <div class="form-group" style="margin-bottom:1.25rem;">
+                <label>Justification <span style="color:var(--danger);">*</span></label>
+                <textarea name="justification" rows="3" required
+                          placeholder="Explain why this change is needed..."
                           style="padding:0.875rem 1rem;border:2px solid var(--border);
                                  border-radius:var(--radius-sm);width:100%;font-family:inherit;
                                  font-size:0.9375rem;background:var(--cream);resize:vertical;"></textarea>
             </div>
-            <input type="hidden" name="placement_id" value="<?= $placement['id'] ?? '' ?>">
+
+            <div class="form-group" style="margin-bottom:1.5rem;">
+                <label>Proposed New Details</label>
+                <textarea name="proposed_details" rows="3"
+                          placeholder="e.g., New end date: 30 June 2026 / New supervisor: Jane Smith (jane@company.com)"
+                          style="padding:0.875rem 1rem;border:2px solid var(--border);
+                                 border-radius:var(--radius-sm);width:100%;font-family:inherit;
+                                 font-size:0.9375rem;background:var(--cream);resize:vertical;"></textarea>
+                <small style="color:var(--muted);">Provide the specific new values you are requesting.</small>
+            </div>
+
             <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
                 <button type="button" class="btn btn-ghost"
                         onclick="document.getElementById('changeModal').style.display='none'">
                     Cancel
                 </button>
-                <button type="submit" class="btn btn-primary">Submit Request</button>
+                <button type="submit" class="btn btn-primary">Submit Change Request →</button>
             </div>
         </form>
     </div>
