@@ -664,7 +664,7 @@ body::before {
                             <option value="">Select programme</option>
                             <option value="BSc">BSc (Bachelors)</option>
                             <option value="MEng">MEng (Integrated Masters)</option>
-                            <option value="MSc">MSc (Masters)</option>
+                            <option value="MSc">MSc (Masters)</option>                         
                         </select>
                     </div>
                 </div>

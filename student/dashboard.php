@@ -299,7 +299,7 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
                                 ['label' => 'Submitted',          'icon' => '✓'],
                                 ['label' => 'Provider Confirmed', 'icon' => '✓'],
                                 ['label' => 'Tutor Review',       'icon' => '▶'],
-                                ['label' => 'Approved',           'icon' => '★'],
+                                ['label' => 'Approved',           'icon' => '★'],                            
                             ];
                             foreach ($steps as $i => $step):
                                 if ($i < $currentStep) $cls = 'done';

@@ -145,6 +145,37 @@
         <span class="nav-icon">🗓</span> Calendar
       </a>
 
+      <a href="/inplace/tutor/create-placement.php"
+         class="nav-item <?= ($activePage === 'create-placement') ? 'active' : '' ?>">
+        <span class="nav-icon">➕</span> Add Placement
+      </a>
+
+      <a href="/inplace/tutor/providers.php"
+         class="nav-item <?= ($activePage === 'providers') ? 'active' : '' ?>">
+        <span class="nav-icon">🏢</span> Provider Directory
+      </a>
+
+      <?php
+        // At-risk badge: count of high-risk flagged placements
+        $atRiskBadge = 0;
+        try {
+            $stmt = $pdo->query("SELECT COUNT(*) FROM placements WHERE risk_flag=1 AND risk_level='high' AND status IN ('approved','active')");
+            $atRiskBadge = (int)$stmt->fetchColumn();
+        } catch (Exception $e) {}
+      ?>
+      <a href="/inplace/tutor/at-risk.php"
+         class="nav-item <?= ($activePage === 'at-risk') ? 'active' : '' ?>">
+        <span class="nav-icon">⚠️</span> At-Risk Students
+        <?php if ($atRiskBadge > 0): ?>
+          <span class="nav-badge" style="background:#ef4444;"><?= $atRiskBadge ?></span>
+        <?php endif; ?>
+      </a>
+
+      <a href="/inplace/tutor/settings.php"
+         class="nav-item <?= ($activePage === 'tutor-settings') ? 'active' : '' ?>">
+        <span class="nav-icon">⚙️</span> Cycle Settings
+      </a>
+
 
     <!-- ══════════════════════════════════
          PROVIDER NAV
