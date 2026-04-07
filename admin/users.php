@@ -175,10 +175,11 @@ $companies = $pdo->query("SELECT id, name FROM companies ORDER BY name ASC")->fe
 
             <select name="role" onchange="this.form.submit()">
                 <option value="">All Roles</option>
-                <option value="student" <?= $filterRole==='student'?'selected':'' ?>>Students</option>
-                <option value="tutor" <?= $filterRole==='tutor'?'selected':'' ?>>Tutors</option>
+                <option value="student"  <?= $filterRole==='student' ?'selected':'' ?>>Students</option>
+                <option value="tutor"    <?= $filterRole==='tutor'   ?'selected':'' ?>>Tutors</option>
                 <option value="provider" <?= $filterRole==='provider'?'selected':'' ?>>Providers</option>
-                <option value="admin" <?= $filterRole==='admin'?'selected':'' ?>>Admins</option>
+                <option value="admin"    <?= $filterRole==='admin'   ?'selected':'' ?>>Admins</option>
+                <option value="director" <?= $filterRole==='director'?'selected':'' ?>>Directors</option>
             </select>
 
             <select name="status" onchange="this.form.submit()">
@@ -321,6 +322,7 @@ $companies = $pdo->query("SELECT id, name FROM companies ORDER BY name ASC")->fe
                         <option value="tutor">Tutor</option>
                         <option value="provider">Provider</option>
                         <option value="admin">Admin</option>
+                        <option value="director">Programme Director</option>
                     </select>
                 </div>
                 <div class="form-group" id="studentIdField">
@@ -376,6 +378,7 @@ $companies = $pdo->query("SELECT id, name FROM companies ORDER BY name ASC")->fe
                         <option value="tutor">Tutor</option>
                         <option value="provider">Provider</option>
                         <option value="admin">Admin</option>
+                        <option value="director">Programme Director</option>
                     </select>
                 </div>
                 <div class="form-group">

@@ -2,6 +2,7 @@
 require_once '../includes/auth.php';
 require_once '../config/db.php';
 require_once '../config/app_config.php';
+require_once '../includes/provider_token_helper.php';
 loadAppConfig($pdo);
 
 use PHPMailer\PHPMailer\PHPMailer;
@@ -126,6 +127,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $host     = $_SERVER['HTTP_HOST'] ?? 'localhost';
                 $provUrl  = $scheme . '://' . $host . '/inplace/provider/requests.php';
 
+                // Generate single-use token for approve/reject without login
+                $confirmUrl = generateProviderToken($pdo, $placementId, $supEmail);
+
                 $mailCfg = require __DIR__ . '/../config/email_config.php';
                 $htmlBody = "
                 <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
@@ -143,8 +147,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                       <tr><td style='padding:0.75rem;font-weight:600;color:#0c1b33;'>End Date</td><td style='padding:0.75rem;color:#374151;'>" . htmlspecialchars($endDate) . "</td></tr>
                     </table>
                     <div style='text-align:center;margin:2rem 0;'>
-                      <a href='$provUrl' style='display:inline-block;padding:0.875rem 2rem;background:#0c1b33;color:#fff !important;text-decoration:none;border-radius:10px;font-weight:700;'>Review &amp; Confirm</a>
+                      <a href='$confirmUrl' style='display:inline-block;padding:0.875rem 2rem;background:#059669;color:#fff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;margin-bottom:0.75rem;'>
+                        ✓ Approve or Decline (no login needed)
+                      </a><br>
+                      <a href='$provUrl' style='display:inline-block;padding:0.625rem 1.5rem;background:#0c1b33;color:#fff !important;text-decoration:none;border-radius:10px;font-weight:600;font-size:0.9rem;margin-top:0.5rem;'>
+                        Log in to InPlace
+                      </a>
                     </div>
+                    <p style='color:#6b7a8d;font-size:0.8rem;text-align:center;margin-top:0.5rem;'>
+                      The quick-confirm link expires in 7 days and can only be used once.
+                    </p>
                     <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>Automated notification from InPlace.</p>
                   </div>
                 </div>";

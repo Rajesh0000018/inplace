@@ -43,15 +43,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $phone   = trim($_POST['phone']   ?? '');
     $description = trim($_POST['description'] ?? '');
 
+    $contactName  = trim($_POST['contact_name']  ?? '');
+    $contactEmail = trim($_POST['contact_email'] ?? '');
+    $contactPhone = trim($_POST['contact_phone'] ?? '');
+
+    // Safely add supervisor/contact columns
+    foreach (['contact_name VARCHAR(120) DEFAULT NULL','contact_email VARCHAR(255) DEFAULT NULL','contact_phone VARCHAR(50) DEFAULT NULL'] as $colDef) {
+        try { $pdo->exec("ALTER TABLE companies ADD COLUMN $colDef"); } catch (Exception $e) {}
+    }
+
     if ($name === '') {
         $errorMsg = 'Company name is required.';
     } else {
         $stmt = $pdo->prepare("
             UPDATE companies
-            SET name = ?, address = ?, city = ?, sector = ?, website = ?, phone = ?, description = ?
+            SET name = ?, address = ?, city = ?, sector = ?, website = ?, phone = ?,
+                description = ?, contact_name = ?, contact_email = ?, contact_phone = ?
             WHERE id = ?
         ");
-        $stmt->execute([$name, $address, $city, $sector, $website, $phone, $description, $companyId]);
+        $stmt->execute([$name, $address, $city, $sector, $website, $phone, $description,
+                        $contactName, $contactEmail, $contactPhone, $companyId]);
 
         // Reload
         $stmt = $pdo->prepare("SELECT * FROM companies WHERE id = ?");
@@ -139,6 +150,32 @@ function s($v): string { return htmlspecialchars((string)($v ?? ''), ENT_QUOTES)
                         <label>Description</label>
                         <textarea name="description" class="form-input" rows="4"
                                   placeholder="Brief description of the company..."><?= s($company['description'] ?? '') ?></textarea>
+                    </div>
+
+                    <hr style="border:none;border-top:1px solid var(--border);margin:1.5rem 0;">
+                    <h4 style="font-size:0.875rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;
+                               color:var(--muted);margin-bottom:1rem;">Supervisor / Primary Contact</h4>
+
+                    <div class="form-group">
+                        <label>Contact Name</label>
+                        <input type="text" name="contact_name" class="form-input"
+                               value="<?= s($company['contact_name'] ?? '') ?>"
+                               placeholder="e.g. Jane Smith">
+                    </div>
+
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;">
+                        <div class="form-group">
+                            <label>Contact Email</label>
+                            <input type="email" name="contact_email" class="form-input"
+                                   value="<?= s($company['contact_email'] ?? '') ?>"
+                                   placeholder="supervisor@company.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Contact Phone</label>
+                            <input type="tel" name="contact_phone" class="form-input"
+                                   value="<?= s($company['contact_phone'] ?? '') ?>"
+                                   placeholder="+44 ...">
+                        </div>
                     </div>
 
                     <div style="display:flex;justify-content:flex-end;margin-top:1rem;">

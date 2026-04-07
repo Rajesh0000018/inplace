@@ -1,6 +1,13 @@
 <?php
 require_once '../includes/auth.php';
 require_once '../config/db.php';
+require_once '../config/app_config.php';
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as MailException;
+require_once __DIR__ . '/../PHPMailer-master/src/Exception.php';
+require_once __DIR__ . '/../PHPMailer-master/src/PHPMailer.php';
+require_once __DIR__ . '/../PHPMailer-master/src/SMTP.php';
 
 requireAuth('provider');
 
@@ -38,6 +45,93 @@ $stmt = $pdo->prepare("
 $stmt->execute([$provider['company_id']]);
 $allVisits = $stmt->fetchAll();
 
+// ── POST: confirm / decline / reschedule ────────────────────────
+$visitFlash = ['msg' => '', 'type' => ''];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['v_action'])) {
+    $visitId = (int)($_POST['visit_id'] ?? 0);
+    $vAction = $_POST['v_action'];
+
+    // Safely add provider confirmation column
+    try { $pdo->exec("ALTER TABLE visits ADD COLUMN provider_confirmed_at DATETIME DEFAULT NULL"); } catch (Exception $e) {}
+
+    // Verify visit belongs to this provider's company
+    $chk = $pdo->prepare("SELECT v.id FROM visits v JOIN placements p ON v.placement_id=p.id WHERE v.id=? AND p.company_id=?");
+    $chk->execute([$visitId, $provider['company_id']]);
+
+    if ($chk->fetch()) {
+        if ($vAction === 'confirm') {
+            $pdo->prepare("UPDATE visits SET status='confirmed', provider_confirmed_at=NOW() WHERE id=?")->execute([$visitId]);
+            $visitFlash = ['msg' => 'Visit confirmed. The tutor has been notified.', 'type' => 'success'];
+
+        } elseif ($vAction === 'decline') {
+            $pdo->prepare("UPDATE visits SET status='cancelled' WHERE id=?")->execute([$visitId]);
+            $visitFlash = ['msg' => 'Visit declined. Please contact the tutor to arrange an alternative.', 'type' => 'danger'];
+
+        } elseif ($vAction === 'reschedule') {
+            // Create reschedule_proposals table
+            $pdo->exec("CREATE TABLE IF NOT EXISTS visit_reschedule_proposals (
+                id             INT AUTO_INCREMENT PRIMARY KEY,
+                visit_id       INT NOT NULL,
+                proposed_by    INT NOT NULL,
+                proposed_date  DATE NOT NULL,
+                proposed_time  TIME NOT NULL,
+                notes          TEXT DEFAULT NULL,
+                status         ENUM('pending','accepted','rejected') DEFAULT 'pending',
+                created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+            $propDate = $_POST['proposed_date'] ?? '';
+            $propTime = $_POST['proposed_time'] ?? '';
+            $notes    = trim($_POST['reschedule_notes'] ?? '');
+
+            if ($propDate && $propTime) {
+                $pdo->prepare("INSERT INTO visit_reschedule_proposals (visit_id, proposed_by, proposed_date, proposed_time, notes) VALUES (?,?,?,?,?)")
+                    ->execute([$visitId, $userId, $propDate, $propTime, $notes]);
+                $pdo->prepare("UPDATE visits SET status='rescheduled' WHERE id=?")->execute([$visitId]);
+                $visitFlash = ['msg' => 'Reschedule proposal submitted. The tutor will be notified.', 'type' => 'success'];
+
+                // Email tutor
+                $vi = $pdo->prepare("SELECT v.*, s.full_name AS student_name, t.email AS tutor_email, t.full_name AS tutor_name, c.name AS company_name
+                    FROM visits v JOIN placements p ON v.placement_id=p.id
+                    JOIN users s ON p.student_id=s.id JOIN users t ON p.tutor_id=t.id JOIN companies c ON p.company_id=c.id WHERE v.id=?");
+                $vi->execute([$visitId]);
+                $vi = $vi->fetch();
+                if ($vi && $vi['tutor_email']) {
+                    try {
+                        loadAppConfig($pdo);
+                        $mailCfg = require __DIR__ . '/../config/email_config.php';
+                        $mail = new PHPMailer(true);
+                        $mail->isSMTP(); $mail->Host = $mailCfg['smtp_host']; $mail->SMTPAuth = true;
+                        $mail->Username = $mailCfg['smtp_user']; $mail->Password = $mailCfg['smtp_pass'];
+                        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS; $mail->Port = $mailCfg['smtp_port'];
+                        $mail->CharSet = 'UTF-8';
+                        $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                        $mail->addAddress($vi['tutor_email'], $vi['tutor_name']);
+                        $mail->isHTML(true);
+                        $mail->Subject = 'InPlace — Visit Reschedule Proposal: ' . $vi['company_name'];
+                        $mail->Body = "<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;'>
+                          <div style='background:#0c1b33;padding:1.5rem;text-align:center;'>
+                            <h2 style='color:#fff;margin:0;'>Visit Reschedule Request</h2>
+                          </div>
+                          <div style='padding:2rem;'>
+                            <p>Dear " . htmlspecialchars($vi['tutor_name']) . ",</p>
+                            <p><strong>" . htmlspecialchars($vi['company_name']) . "</strong> has proposed a new date for the visit with <strong>" . htmlspecialchars($vi['student_name']) . "</strong>.</p>
+                            <table style='width:100%;border-collapse:collapse;margin:1rem 0;'>
+                              <tr><td style='padding:0.75rem;background:#f8f5f0;font-weight:600;'>Proposed Date</td><td style='padding:0.75rem;'>" . date('d M Y', strtotime($propDate)) . "</td></tr>
+                              <tr><td style='padding:0.75rem;background:#f8f5f0;font-weight:600;'>Proposed Time</td><td style='padding:0.75rem;'>" . date('g:i A', strtotime($propTime)) . "</td></tr>
+                              " . ($notes ? "<tr><td style='padding:0.75rem;background:#f8f5f0;font-weight:600;'>Notes</td><td style='padding:0.75rem;'>" . nl2br(htmlspecialchars($notes)) . "</td></tr>" : "") . "
+                            </table>
+                            <p>Please log in to InPlace to accept or arrange an alternative.</p>
+                          </div>
+                        </div>";
+                        $mail->send();
+                    } catch (Exception $ex) { error_log('Reschedule email: ' . $ex->getMessage()); }
+                }
+            }
+        }
+    }
+}
+
 // Separate into upcoming and past
 $upcomingVisits = [];
 $pastVisits = [];
@@ -60,6 +154,16 @@ $pendingRequests = 0;
     <?php include '../includes/topbar.php'; ?>
 
     <div class="page-content">
+
+        <?php if ($visitFlash['msg']): ?>
+        <div style="background:var(--<?= $visitFlash['type'] ?>-bg);
+                    border:1px solid <?= $visitFlash['type']==='success'?'#6ee7b7':'#fca5a5' ?>;
+                    border-radius:var(--radius);padding:1.25rem 2rem;margin-bottom:1.5rem;">
+            <p style="color:var(--<?= $visitFlash['type'] ?>);font-weight:500;">
+                <?= htmlspecialchars($visitFlash['msg']) ?>
+            </p>
+        </div>
+        <?php endif; ?>
 
         <!-- Stats -->
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1.25rem;margin-bottom:2rem;">
@@ -183,25 +287,41 @@ $pendingRequests = 0;
                     </div>
                     <?php endif; ?>
 
-                    <!-- Status Badge -->
+                    <!-- Status Badge + Actions -->
                     <?php
                     $statusBadge = match($visit['status']) {
-                        'scheduled' => ['pending', 'Scheduled'],
-                        'confirmed' => ['approved', 'Confirmed'],
-                        'completed' => ['approved', 'Completed'],
-                        'cancelled' => ['rejected', 'Cancelled'],
-                        default => ['open', ucfirst($visit['status'])]
+                        'scheduled'    => ['pending',  'Scheduled'],
+                        'confirmed'    => ['approved', 'Confirmed'],
+                        'completed'    => ['approved', 'Completed'],
+                        'cancelled'    => ['rejected', 'Cancelled'],
+                        'rescheduled'  => ['review',   'Reschedule Pending'],
+                        default        => ['open',     ucfirst($visit['status'])]
                     };
                     ?>
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
                         <span class="badge badge-<?= $statusBadge[0] ?>">
                             <?= $statusBadge[1] ?>
                         </span>
-                        
-                        <a href="mailto:<?= htmlspecialchars($visit['tutor_email']) ?>" 
-                           class="btn btn-ghost btn-sm">
-                            📧 Contact Tutor
-                        </a>
+                        <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                            <?php if ($visit['status'] === 'scheduled'): ?>
+                            <form method="POST" style="display:inline;">
+                                <input type="hidden" name="visit_id" value="<?= $visit['id'] ?>">
+                                <input type="hidden" name="v_action" value="confirm">
+                                <button type="submit" class="btn btn-success btn-sm">✓ Confirm</button>
+                            </form>
+                            <button onclick="openReschedule(<?= $visit['id'] ?>)"
+                                    class="btn btn-ghost btn-sm">📅 Reschedule</button>
+                            <form method="POST" style="display:inline;"
+                                  onsubmit="return confirm('Decline this visit?')">
+                                <input type="hidden" name="visit_id" value="<?= $visit['id'] ?>">
+                                <input type="hidden" name="v_action" value="decline">
+                                <button type="submit" class="btn btn-danger btn-sm">✗ Decline</button>
+                            </form>
+                            <?php else: ?>
+                            <a href="mailto:<?= htmlspecialchars($visit['tutor_email']) ?>"
+                               class="btn btn-ghost btn-sm">📧 Contact Tutor</a>
+                            <?php endif; ?>
+                        </div>
                     </div>
 
                 </div>
@@ -292,5 +412,58 @@ $pendingRequests = 0;
 
     </div>
 </div>
+
+<!-- Reschedule Modal -->
+<div id="rescheduleModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);
+     z-index:1000;align-items:center;justify-content:center;">
+    <div class="panel" style="width:90%;max-width:460px;margin:0;">
+        <div class="panel-header">
+            <h3>📅 Propose Alternative Date</h3>
+            <button onclick="document.getElementById('rescheduleModal').style.display='none'"
+                    style="background:none;border:none;font-size:1.25rem;cursor:pointer;color:var(--muted);">✕</button>
+        </div>
+        <div class="panel-body">
+            <form method="POST">
+                <input type="hidden" name="visit_id" id="rescheduleVisitId">
+                <input type="hidden" name="v_action" value="reschedule">
+                <div class="form-group">
+                    <label>Proposed Date <span style="color:var(--danger);">*</span></label>
+                    <input type="date" name="proposed_date" required
+                           min="<?= date('Y-m-d') ?>"
+                           style="padding:0.75rem 1rem;border:2px solid var(--border);border-radius:var(--radius-sm);
+                                  width:100%;font-family:inherit;font-size:0.9375rem;">
+                </div>
+                <div class="form-group">
+                    <label>Proposed Time <span style="color:var(--danger);">*</span></label>
+                    <input type="time" name="proposed_time" required
+                           style="padding:0.75rem 1rem;border:2px solid var(--border);border-radius:var(--radius-sm);
+                                  width:100%;font-family:inherit;font-size:0.9375rem;">
+                </div>
+                <div class="form-group">
+                    <label>Notes <span style="color:var(--muted);font-size:0.8rem;">(optional)</span></label>
+                    <textarea name="reschedule_notes" rows="3"
+                              placeholder="Reason for reschedule or any constraints…"
+                              style="padding:0.875rem 1rem;border:2px solid var(--border);border-radius:var(--radius-sm);
+                                     width:100%;font-family:inherit;font-size:0.9375rem;resize:vertical;"></textarea>
+                </div>
+                <div style="display:flex;justify-content:flex-end;gap:0.75rem;margin-top:1.5rem;">
+                    <button type="button" onclick="document.getElementById('rescheduleModal').style.display='none'"
+                            class="btn btn-ghost">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Send Proposal →</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function openReschedule(visitId) {
+    document.getElementById('rescheduleVisitId').value = visitId;
+    document.getElementById('rescheduleModal').style.display = 'flex';
+}
+document.getElementById('rescheduleModal')?.addEventListener('click', function(e) {
+    if (e.target === this) this.style.display = 'none';
+});
+</script>
 
 <?php include '../includes/footer.php'; ?>

@@ -122,17 +122,90 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
     } elseif ($action === 'provide_feedback') {
         $feedback = trim($_POST['feedback']);
-        
+
         $stmt = $pdo->prepare("
-            UPDATE placements 
+            UPDATE placements
             SET provider_feedback = ?,
                 provider_feedback_at = NOW()
             WHERE id = ? AND company_id = ?
         ");
         $stmt->execute([$feedback, $placementId, $provider['company_id']]);
-        
+
         $actionMsg = "✅ Feedback submitted successfully!";
         $actionType = 'success';
+
+    } elseif ($action === 'reject') {
+        $reason = trim($_POST['rejection_reason'] ?? '');
+
+        // Safely add rejection columns
+        foreach (['provider_rejection_reason TEXT DEFAULT NULL', 'provider_rejected_at DATETIME DEFAULT NULL'] as $colDef) {
+            try { $pdo->exec("ALTER TABLE placements ADD COLUMN $colDef"); } catch (Exception $e) {}
+        }
+
+        $stmt = $pdo->prepare("
+            UPDATE placements
+            SET status='rejected', provider_rejection_reason=?, provider_rejected_at=NOW()
+            WHERE id=? AND company_id=? AND status='awaiting_provider'
+        ");
+        $stmt->execute([$reason, $placementId, $provider['company_id']]);
+
+        // Email student + tutor
+        $stmt = $pdo->prepare("
+            SELECT p.student_id, p.tutor_id,
+                   s.email AS student_email, s.full_name AS student_name,
+                   t.email AS tutor_email, t.full_name AS tutor_name,
+                   c.name AS company_name, p.role_title
+            FROM placements p
+            JOIN users s ON p.student_id = s.id
+            LEFT JOIN users t ON p.tutor_id = t.id
+            JOIN companies c ON p.company_id = c.id
+            WHERE p.id = ?
+        ");
+        $stmt->execute([$placementId]);
+        $pi = $stmt->fetch();
+
+        if ($pi) {
+            loadAppConfig($pdo);
+            $mailCfg  = require __DIR__ . '/../config/email_config.php';
+            $reasonHtml = $reason ? '<p style="color:#374151;margin-top:1rem;"><strong>Reason:</strong> ' . nl2br(htmlspecialchars($reason)) . '</p>' : '';
+            $recipients = array_filter([
+                $pi['student_email'] ? ['email' => $pi['student_email'], 'name' => $pi['student_name']] : null,
+                $pi['tutor_email']   ? ['email' => $pi['tutor_email'],   'name' => $pi['tutor_name']]   : null,
+            ]);
+            foreach ($recipients as $rec) {
+                $htmlBody = "
+                <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+                  <div style='background:#0c1b33;padding:2rem;text-align:center;'>
+                    <h1 style='color:#fff;font-size:1.5rem;margin:0;'>InPlace</h1>
+                    <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Placement Request Not Approved</p>
+                  </div>
+                  <div style='padding:2rem;'>
+                    <p>Dear " . htmlspecialchars($rec['name']) . ",</p>
+                    <p>The placement request for <strong>" . htmlspecialchars($pi['student_name']) . "</strong>
+                       at <strong>" . htmlspecialchars($pi['company_name']) . "</strong>
+                       (" . htmlspecialchars($pi['role_title']) . ") has been <strong style='color:#dc2626;'>rejected</strong> by the provider.</p>
+                    $reasonHtml
+                    <p style='color:#6b7a8d;font-size:0.85rem;margin-top:1.5rem;'>This is an automated notification from InPlace.</p>
+                  </div>
+                </div>";
+                $mail = new PHPMailer(true);
+                try {
+                    $mail->isSMTP(); $mail->Host = $mailCfg['smtp_host']; $mail->SMTPAuth = true;
+                    $mail->Username = $mailCfg['smtp_user']; $mail->Password = $mailCfg['smtp_pass'];
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS; $mail->Port = $mailCfg['smtp_port'];
+                    $mail->CharSet = 'UTF-8';
+                    $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                    $mail->addAddress($rec['email'], $rec['name']);
+                    $mail->isHTML(true);
+                    $mail->Subject = 'InPlace — Placement Request Rejected: ' . $pi['student_name'];
+                    $mail->Body = $htmlBody;
+                    $mail->send();
+                } catch (MailException $ex) { error_log('Reject email failed: ' . $mail->ErrorInfo); }
+            }
+        }
+
+        $actionMsg  = 'Placement request rejected. The student and tutor have been notified.';
+        $actionType = 'danger';
     }
 }
 
@@ -489,17 +562,20 @@ try {
                                         <form method="POST" style="display:inline;">
                                             <input type="hidden" name="placement_id" value="<?= $req['id'] ?>">
                                             <input type="hidden" name="action" value="approve">
-                                            <button type="submit" class="btn btn-success btn-sm">
-                                                ✓ Approve
-                                            </button>
+                                            <button type="submit" class="btn btn-success btn-sm">✓ Approve</button>
                                         </form>
-                                        <button onclick="showFeedbackModal(<?= $req['id'] ?>)" 
-                                                class="btn btn-ghost btn-sm">
-                                            💬 Feedback
-                                        </button>
+                                        <button onclick="showRejectModal(<?= $req['id'] ?>, '<?= htmlspecialchars(addslashes($req['student_name'])) ?>')"
+                                                class="btn btn-danger btn-sm">✗ Reject</button>
+                                        <button onclick="showFeedbackModal(<?= $req['id'] ?>)"
+                                                class="btn btn-ghost btn-sm">💬 Comment</button>
                                     </div>
+                                <?php elseif ($req['status'] === 'rejected' && $req['provider_rejection_reason'] ?? null): ?>
+                                    <span style="font-size:0.8rem;color:var(--danger);"
+                                          title="<?= htmlspecialchars($req['provider_rejection_reason'] ?? '') ?>">
+                                        Rejected
+                                    </span>
                                 <?php else: ?>
-                                    <a href="view-placement.php?id=<?= $req['id'] ?>" 
+                                    <a href="view-placement.php?id=<?= $req['id'] ?>"
                                        class="btn btn-ghost btn-sm">View</a>
                                 <?php endif; ?>
                             </td>
@@ -664,7 +740,46 @@ try {
     </div>
 </div>
 
+<!-- Reject Modal -->
+<div id="rejectModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);
+                              z-index:1002;align-items:center;justify-content:center;">
+    <div class="panel" style="width:90%;max-width:480px;margin:0;">
+        <div class="panel-header">
+            <h3 style="color:var(--danger);">✗ Reject Placement Request</h3>
+        </div>
+        <div class="panel-body">
+            <p id="rejectStudentLabel" style="margin-bottom:1rem;color:var(--muted);font-size:0.9rem;"></p>
+            <form method="POST" id="rejectForm">
+                <input type="hidden" name="placement_id" id="rejectPlacementId">
+                <input type="hidden" name="action" value="reject">
+                <div class="form-group">
+                    <label>Reason for rejection <span style="color:var(--muted);font-size:0.8rem;">(optional)</span></label>
+                    <textarea name="rejection_reason" rows="4"
+                              placeholder="Explain why this placement cannot be accommodated…"
+                              style="padding:0.875rem 1rem;border:2px solid var(--border);border-radius:var(--radius-sm);
+                                     width:100%;font-family:inherit;font-size:0.9375rem;resize:vertical;"></textarea>
+                    <small style="color:var(--muted);">This will be shared with the student and their tutor.</small>
+                </div>
+                <div style="display:flex;justify-content:flex-end;gap:1rem;margin-top:1.5rem;">
+                    <button type="button" onclick="document.getElementById('rejectModal').style.display='none'"
+                            class="btn btn-ghost">Cancel</button>
+                    <button type="submit" class="btn btn-danger">Confirm Rejection</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 <script>
+function showRejectModal(placementId, studentName) {
+    document.getElementById('rejectPlacementId').value = placementId;
+    document.getElementById('rejectStudentLabel').textContent = 'Rejecting request for: ' + studentName;
+    document.getElementById('rejectModal').style.display = 'flex';
+}
+document.getElementById('rejectModal')?.addEventListener('click', function(e) {
+    if (e.target === this) this.style.display = 'none';
+});
+
 function openCrModal(crId, action) {
     document.getElementById('crId').value = crId;
     document.getElementById('crActionInput').value = action;

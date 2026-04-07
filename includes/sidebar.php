@@ -213,6 +213,26 @@
         <?php endif; ?>
       </a>
 
+      <a href="/inplace/provider/evaluate.php"
+         class="nav-item <?= ($activePage === 'evaluate') ? 'active' : '' ?>">
+        <span class="nav-icon">⭐</span> Evaluations
+      </a>
+
+      <a href="/inplace/provider/issues.php"
+         class="nav-item <?= ($activePage === 'issues') ? 'active' : '' ?>">
+        <span class="nav-icon">⚠️</span> Report Issue
+      </a>
+
+      <a href="/inplace/provider/terminate.php"
+         class="nav-item <?= ($activePage === 'terminate') ? 'active' : '' ?>">
+        <span class="nav-icon">📢</span> Notify Change
+      </a>
+
+      <a href="/inplace/provider/opportunities.php"
+         class="nav-item <?= ($activePage === 'opportunities') ? 'active' : '' ?>">
+        <span class="nav-icon">💼</span> Opportunities
+      </a>
+
       <a href="/inplace/provider/settings.php"
          class="nav-item <?= ($activePage === 'settings') ? 'active' : '' ?>">
         <span class="nav-icon">⚙️</span> Company Details
@@ -262,6 +282,47 @@
      class="nav-item <?= ($activePage === 'settings') ? 'active' : '' ?>">
     <span class="nav-icon">⚙️</span> Settings
   </a>
+
+    <!-- ══════════════════════════════════
+         DIRECTOR NAV
+    ══════════════════════════════════ -->
+    <?php elseif (authRole() === 'director'): ?>
+
+      <a href="/inplace/director/dashboard.php"
+         class="nav-item <?= ($activePage === 'dashboard') ? 'active' : '' ?>">
+        <span class="nav-icon">🏠</span> Dashboard
+      </a>
+
+      <a href="/inplace/director/placements.php"
+         class="nav-item <?= ($activePage === 'dir-placements') ? 'active' : '' ?>">
+        <span class="nav-icon">📊</span> Placements
+      </a>
+
+      <a href="/inplace/director/map.php"
+         class="nav-item <?= ($activePage === 'dir-map') ? 'active' : '' ?>">
+        <span class="nav-icon">🗺</span> Map View
+      </a>
+
+      <a href="/inplace/director/at-risk.php"
+         class="nav-item <?= ($activePage === 'dir-at-risk') ? 'active' : '' ?>">
+        <span class="nav-icon">⚠️</span> At-Risk Students
+        <?php
+          $dirAtRisk = 0;
+          try { $dirAtRisk = (int)$pdo->query("SELECT COUNT(*) FROM placements WHERE risk_flag=1 AND risk_level='high'")->fetchColumn(); } catch (Exception $e) {}
+          if ($dirAtRisk > 0): ?>
+          <span class="nav-badge" style="background:#ef4444;"><?= $dirAtRisk ?></span>
+        <?php endif; ?>
+      </a>
+
+      <a href="/inplace/director/feedback.php"
+         class="nav-item <?= ($activePage === 'dir-feedback') ? 'active' : '' ?>">
+        <span class="nav-icon">⭐</span> Employer Feedback
+      </a>
+
+      <a href="/inplace/director/reports.php"
+         class="nav-item <?= ($activePage === 'dir-reports') ? 'active' : '' ?>">
+        <span class="nav-icon">📥</span> Reports &amp; Exports
+      </a>
 
 <?php endif; ?>
 

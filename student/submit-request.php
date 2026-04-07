@@ -2,6 +2,7 @@
 require_once '../includes/auth.php';
 require_once '../config/db.php';
 require_once '../config/app_config.php';
+require_once '../includes/provider_token_helper.php';
 loadAppConfig($pdo);
 
 use PHPMailer\PHPMailer\PHPMailer;
@@ -209,9 +210,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $toEmail = $providerUser ? $providerUser['email'] : $supEmail;
                 $toName  = $providerUser ? $providerUser['full_name'] : $supName;
+
+                // Generate a single-use confirm token for quick approve/reject without login
+                $confirmUrl   = generateProviderToken($pdo, $placementId, $toEmail);
                 $actionUrl    = $providerUser ? $providerRequestsUrl : $providerRegisterUrl . '?company=' . urlencode($companyName) . '&email=' . urlencode($supEmail);
-                $actionLabel  = $providerUser ? 'Review Placement Request' : 'Register & Review Request';
-                $extraNote    = $providerUser ? '' : "<p style='color:#6b7a8d;font-size:0.85rem;margin-top:1rem;'>You have not yet registered on InPlace. Click the button above to create a provider account and review this request.</p>";
+                $actionLabel  = $providerUser ? 'Review in InPlace' : 'Register & Review Request';
+                $extraNote    = $providerUser ? '' : "<p style='color:#6b7a8d;font-size:0.85rem;margin-top:1rem;'>You have not yet registered on InPlace. You can still approve or decline using the quick-confirm link above, or click below to create an account for full access.</p>";
 
                 $mailCfg = require __DIR__ . '/../config/email_config.php';
                 $htmlBody = "
@@ -231,9 +235,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                       <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>End Date</td><td style='padding:0.75rem 1rem;color:#374151;'>" . htmlspecialchars($_POST['end_date'] ?? '') . "</td></tr>
                     </table>
                     <div style='text-align:center;margin:2rem 0;'>
-                      <a href='" . $actionUrl . "' style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;border:2px solid #0c1b33;'>" . $actionLabel . "</a>
+                      <a href='" . $confirmUrl . "' style='display:inline-block;padding:0.875rem 2rem;background-color:#059669;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;margin-bottom:0.75rem;'>
+                        ✓ Approve or Decline (no login needed)
+                      </a><br>
+                      <a href='" . $actionUrl . "' style='display:inline-block;padding:0.625rem 1.5rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:600;font-size:0.9rem;margin-top:0.5rem;'>
+                        " . $actionLabel . "
+                      </a>
                     </div>
                     $extraNote
+                    <p style='color:#6b7a8d;font-size:0.8rem;text-align:center;margin-top:1rem;'>
+                      The quick-confirm link expires in 7 days and can only be used once.
+                    </p>
                     <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
                   </div>
                 </div>";
