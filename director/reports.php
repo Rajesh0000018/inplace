@@ -35,18 +35,20 @@ if (isset($_GET['export'])) {
         foreach ($rows as $r) fputcsv($out, $r);
 
     } elseif ($type === 'visits') {
-        fputcsv($out, ['Visit Date','Visit Time','Student','Company','Tutor','Purpose','Status','Duration (hrs)']);
-        $rows = $pdo->query("
-            SELECT v.visit_date, v.visit_time, u.full_name, c.name, t.full_name,
-                   v.purpose, v.status, v.duration_hours
-            FROM visits v
-            JOIN placements p ON v.placement_id=p.id
-            JOIN users u ON p.student_id=u.id
-            JOIN companies c ON p.company_id=c.id
-            JOIN users t ON p.tutor_id=t.id
-            ORDER BY v.visit_date DESC
-        ")->fetchAll(PDO::FETCH_NUM);
-        foreach ($rows as $r) fputcsv($out, $r);
+        fputcsv($out, ['Visit Date','Visit Time','Student','Company','Tutor','Type','Status','Duration (hrs)']);
+        try {
+            $rows = $pdo->query("
+                SELECT v.visit_date, v.visit_time, u.full_name, c.name, t.full_name,
+                       v.type, v.status, v.duration_hours
+                FROM visits v
+                JOIN placements p ON v.placement_id=p.id
+                JOIN users u ON p.student_id=u.id
+                JOIN companies c ON p.company_id=c.id
+                LEFT JOIN users t ON v.tutor_id=t.id
+                ORDER BY v.visit_date DESC
+            ")->fetchAll(PDO::FETCH_NUM);
+            foreach ($rows as $r) fputcsv($out, $r);
+        } catch (Exception $e) {}
 
     } elseif ($type === 'at_risk') {
         fputcsv($out, ['Student','Email','Company','Role','Risk Level','Notes','Flagged At','Flagged By']);
