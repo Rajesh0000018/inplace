@@ -1,54 +1,79 @@
 <?php
 require_once '../includes/auth.php';
 require_once '../config/db.php';
+require_once '../config/app_config.php';
 
 requireAuth('admin');
 
-$pageTitle = 'System Settings';
-$pageSubtitle = 'Configure system-wide settings and preferences';
-$activePage = 'settings';
-$userId = authId();
-
-$unreadCount = 0;
+$pageTitle    = 'Settings';
+$pageSubtitle = 'API & email configuration';
+$activePage   = 'settings';
+$userId       = authId();
+$unreadCount  = 0;
 $pendingRequests = 0;
 
-// Handle settings update
-$actionMsg = '';
+// ── Default values (used on first install) ───────────────────────────────
+$defaults = [
+    // Gmail SMTP
+    'smtp_host'             => 'smtp.gmail.com',
+    'smtp_port'             => '587',
+    'smtp_user'             => '',
+    'smtp_pass'             => '',
+    'from_email'            => '',
+    'from_name'             => 'InPlace',
+    // reCAPTCHA v2
+    'recaptcha_site_key'    => '',
+    'recaptcha_secret_key'  => '',
+    // Google Calendar
+    'google_calendar_key'   => '',
+    'google_calendar_client_id'     => '',
+    'google_calendar_client_secret' => '',
+    // Leaflet
+    'leaflet_tile_url'      => 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+];
+
+// ── Pre-populate DB with defaults if keys are missing ────────────────────
+$insertStmt = $pdo->prepare("
+    INSERT IGNORE INTO system_settings (setting_key, setting_value, updated_at)
+    VALUES (?, ?, NOW())
+");
+foreach ($defaults as $k => $v) {
+    $insertStmt->execute([$k, $v]);
+}
+
+$actionMsg  = '';
 $actionType = '';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
+    $allowed = array_keys($defaults);
     try {
-        // Update or insert each setting
-        foreach ($_POST as $key => $value) {
-            if ($key === 'csrf_token') continue; // Skip CSRF token
-            
-            $stmt = $pdo->prepare("
-                INSERT INTO system_settings (setting_key, setting_value, updated_at)
-                VALUES (?, ?, NOW())
-                ON DUPLICATE KEY UPDATE setting_value = ?, updated_at = NOW()
-            ");
-            $stmt->execute([$key, $value, $value]);
+        $upsert = $pdo->prepare("
+            INSERT INTO system_settings (setting_key, setting_value, updated_at)
+            VALUES (?, ?, NOW())
+            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = NOW()
+        ");
+        foreach ($allowed as $key) {
+            $value = trim($_POST[$key] ?? '');
+            $upsert->execute([$key, $value]);
         }
-        
-        $actionMsg = "✅ Settings saved successfully!";
+        // Reload config cache
+        global $_APP_CONFIG;
+        $_APP_CONFIG = null;
+        loadAppConfig($pdo);
+
+        $actionMsg  = "Settings saved successfully!";
         $actionType = 'success';
-        
     } catch (Exception $e) {
-        $actionMsg = "❌ Error saving settings: " . $e->getMessage();
+        $actionMsg  = "Error saving settings: " . $e->getMessage();
         $actionType = 'danger';
     }
 }
 
-// Fetch current settings
-$stmt = $pdo->query("SELECT setting_key, setting_value FROM system_settings");
-$settings = [];
-while ($row = $stmt->fetch()) {
-    $settings[$row['setting_key']] = $row['setting_value'];
-}
+// ── Load current settings ─────────────────────────────────────────────────
+loadAppConfig($pdo);
 
-// Helper function to get setting with default
-function getSetting($settings, $key, $default = '') {
-    return $settings[$key] ?? $default;
+function s(string $key, string $default = ''): string {
+    return htmlspecialchars(appConfig($key, $default));
 }
 ?>
 <?php include '../includes/header.php'; ?>
@@ -68,210 +93,181 @@ function getSetting($settings, $key, $default = '') {
 
         <form method="POST">
 
-            <!-- Academic Year Settings -->
+            <!-- ── Gmail SMTP ─────────────────────────────────────────── -->
             <div class="panel" style="margin-bottom:2rem;">
                 <div class="panel-header">
-                    <h3>📅 Academic Year Configuration</h3>
-                    <p>Set the current academic year and important dates</p>
+                    <div>
+                        <h3>Gmail SMTP — Email Configuration</h3>
+                        <p style="color:var(--muted);font-size:0.875rem;margin:0;">
+                            Used for all outgoing emails (OTP, registration approval, notifications).
+                            Requires a Gmail App Password — not your account password.
+                        </p>
+                    </div>
                 </div>
                 <div class="panel-body">
                     <div class="form-grid">
+
                         <div class="form-group">
-                            <label>Academic Year</label>
-                            <input type="text" name="academic_year" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'academic_year', '2025/2026')) ?>"
-                                   placeholder="e.g., 2025/2026">
+                            <label>SMTP Host</label>
+                            <input type="text" name="smtp_host"
+                                   value="<?= s('smtp_host', 'smtp.gmail.com') ?>"
+                                   placeholder="smtp.gmail.com">
                         </div>
+
                         <div class="form-group">
-                            <label>Semester</label>
-                            <select name="current_semester" class="form-input">
-                                <option value="1" <?= getSetting($settings, 'current_semester')==='1'?'selected':'' ?>>Semester 1</option>
-                                <option value="2" <?= getSetting($settings, 'current_semester')==='2'?'selected':'' ?>>Semester 2</option>
-                            </select>
+                            <label>SMTP Port</label>
+                            <input type="number" name="smtp_port"
+                                   value="<?= s('smtp_port', '587') ?>"
+                                   placeholder="587">
+                            <small style="color:var(--muted);">587 for STARTTLS (recommended)</small>
                         </div>
+
                         <div class="form-group">
-                            <label>Academic Year Start Date</label>
-                            <input type="date" name="academic_year_start" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'academic_year_start', '2025-09-01')) ?>">
+                            <label>Gmail Address (Username)</label>
+                            <input type="email" name="smtp_user"
+                                   value="<?= s('smtp_user') ?>"
+                                   placeholder="yourapp@gmail.com">
                         </div>
+
                         <div class="form-group">
-                            <label>Academic Year End Date</label>
-                            <input type="date" name="academic_year_end" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'academic_year_end', '2026-06-30')) ?>">
+                            <label>Gmail App Password</label>
+                            <input type="password" name="smtp_pass"
+                                   value="<?= s('smtp_pass') ?>"
+                                   placeholder="xxxx xxxx xxxx xxxx"
+                                   autocomplete="new-password">
+                            <small style="color:var(--muted);">
+                                Generate at
+                                <a href="https://myaccount.google.com/apppasswords" target="_blank"
+                                   style="color:var(--navy);">Google Account → App Passwords</a>
+                            </small>
                         </div>
+
+                        <div class="form-group">
+                            <label>From Email</label>
+                            <input type="email" name="from_email"
+                                   value="<?= s('from_email') ?>"
+                                   placeholder="noreply@yourapp.com">
+                        </div>
+
+                        <div class="form-group">
+                            <label>From Name</label>
+                            <input type="text" name="from_name"
+                                   value="<?= s('from_name', 'InPlace') ?>"
+                                   placeholder="InPlace">
+                        </div>
+
                     </div>
                 </div>
             </div>
 
-            <!-- Report Deadlines -->
+            <!-- ── reCAPTCHA v2 ──────────────────────────────────────── -->
             <div class="panel" style="margin-bottom:2rem;">
                 <div class="panel-header">
-                    <h3>📊 Report Deadlines</h3>
-                    <p>Configure submission deadlines for placement reports</p>
+                    <div>
+                        <h3>Google reCAPTCHA v2</h3>
+                        <p style="color:var(--muted);font-size:0.875rem;margin:0;">
+                            Protects the login page from bots. Get keys at
+                            <a href="https://www.google.com/recaptcha/admin/create" target="_blank"
+                               style="color:var(--navy);">google.com/recaptcha</a>
+                            — select <strong>reCAPTCHA v2 "I'm not a robot"</strong>.
+                        </p>
+                    </div>
                 </div>
                 <div class="panel-body">
                     <div class="form-grid">
+
                         <div class="form-group">
-                            <label>Interim Report Deadline</label>
-                            <input type="date" name="interim_report_deadline" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'interim_report_deadline', '2026-01-31')) ?>">
+                            <label>Site Key <span style="color:var(--muted);font-weight:400;">(public — used in HTML)</span></label>
+                            <input type="text" name="recaptcha_site_key"
+                                   value="<?= s('recaptcha_site_key') ?>"
+                                   placeholder="6Lc...">
                         </div>
+
                         <div class="form-group">
-                            <label>Final Report Deadline</label>
-                            <input type="date" name="final_report_deadline" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'final_report_deadline', '2026-06-30')) ?>">
+                            <label>Secret Key <span style="color:var(--muted);font-weight:400;">(server-side verification)</span></label>
+                            <input type="password" name="recaptcha_secret_key"
+                                   value="<?= s('recaptcha_secret_key') ?>"
+                                   placeholder="6Lc..."
+                                   autocomplete="new-password">
                         </div>
-                        <div class="form-group">
-                            <label>Placement Start Window</label>
-                            <input type="date" name="placement_start_window" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'placement_start_window', '2025-09-01')) ?>">
-                        </div>
-                        <div class="form-group">
-                            <label>Placement End Window</label>
-                            <input type="date" name="placement_end_window" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'placement_end_window', '2026-08-31')) ?>">
-                        </div>
+
                     </div>
                 </div>
             </div>
 
-            <!-- Placement Types -->
+            <!-- ── Google Calendar API ───────────────────────────────── -->
             <div class="panel" style="margin-bottom:2rem;">
                 <div class="panel-header">
-                    <h3>🏢 Placement Types</h3>
-                    <p>Define available placement types</p>
+                    <div>
+                        <h3>Google Calendar API</h3>
+                        <p style="color:var(--muted);font-size:0.875rem;margin:0;">
+                            Used to sync placement visits and meetings. Get credentials at
+                            <a href="https://console.cloud.google.com/apis/credentials" target="_blank"
+                               style="color:var(--navy);">Google Cloud Console</a>
+                            — enable the Calendar API and create an OAuth 2.0 Client ID.
+                        </p>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="form-grid">
+
+                        <div class="form-group">
+                            <label>API Key</label>
+                            <input type="password" name="google_calendar_key"
+                                   value="<?= s('google_calendar_key') ?>"
+                                   placeholder="AIza..."
+                                   autocomplete="new-password">
+                        </div>
+
+                        <div class="form-group">
+                            <label>OAuth Client ID</label>
+                            <input type="text" name="google_calendar_client_id"
+                                   value="<?= s('google_calendar_client_id') ?>"
+                                   placeholder="xxxxxxxx.apps.googleusercontent.com">
+                        </div>
+
+                        <div class="form-group full-col">
+                            <label>OAuth Client Secret</label>
+                            <input type="password" name="google_calendar_client_secret"
+                                   value="<?= s('google_calendar_client_secret') ?>"
+                                   placeholder="GOCSPX-..."
+                                   autocomplete="new-password">
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Leaflet Map ───────────────────────────────────────── -->
+            <div class="panel" style="margin-bottom:2rem;">
+                <div class="panel-header">
+                    <div>
+                        <h3>Leaflet.js Map — Tile URL</h3>
+                        <p style="color:var(--muted);font-size:0.875rem;margin:0;">
+                            The tile layer URL used by the placement map view.
+                            Default is OpenStreetMap (free, no key required).
+                            Use <code>{s}</code>, <code>{z}</code>, <code>{x}</code>, <code>{y}</code> placeholders.
+                        </p>
+                    </div>
                 </div>
                 <div class="panel-body">
                     <div class="form-group">
-                        <label>Allowed Placement Types (comma-separated)</label>
-                        <input type="text" name="placement_types" class="form-input"
-                               value="<?= htmlspecialchars(getSetting($settings, 'placement_types', 'Full-time,Part-time,Remote,Hybrid')) ?>"
-                               placeholder="Full-time, Part-time, Remote, Hybrid">
-                        <small style="color:var(--muted);display:block;margin-top:0.5rem;">
-                            Separate multiple types with commas
+                        <label>Tile URL</label>
+                        <input type="text" name="leaflet_tile_url"
+                               value="<?= s('leaflet_tile_url', 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png') ?>"
+                               placeholder="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                               style="font-family:'DM Mono',monospace;font-size:0.875rem;">
+                        <small style="color:var(--muted);">
+                            Alternatives: CartoDB Light —
+                            <code style="font-size:0.8rem;">https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png</code>
                         </small>
                     </div>
-                    <div class="form-group">
-                        <label>Minimum Placement Duration (weeks)</label>
-                        <input type="number" name="min_placement_weeks" class="form-input"
-                               value="<?= htmlspecialchars(getSetting($settings, 'min_placement_weeks', '48')) ?>"
-                               min="1" placeholder="48">
-                    </div>
                 </div>
             </div>
 
-            <!-- Notification Settings -->
-            <div class="panel" style="margin-bottom:2rem;">
-                <div class="panel-header">
-                    <h3>🔔 Notification Settings</h3>
-                    <p>Configure automatic notifications and reminders</p>
-                </div>
-                <div class="panel-body">
-                    <div class="form-grid">
-                        <div class="form-group full-col">
-                            <label style="display:flex;align-items:center;gap:0.75rem;">
-                                <input type="checkbox" name="enable_email_notifications"
-                                       value="1" <?= getSetting($settings, 'enable_email_notifications')==='1'?'checked':'' ?>>
-                                Enable Email Notifications
-                            </label>
-                        </div>
-                        <div class="form-group full-col">
-                            <label style="display:flex;align-items:center;gap:0.75rem;">
-                                <input type="checkbox" name="enable_deadline_reminders"
-                                       value="1" <?= getSetting($settings, 'enable_deadline_reminders')==='1'?'checked':'' ?>>
-                                Send Deadline Reminders
-                            </label>
-                        </div>
-                        <div class="form-group">
-                            <label>Reminder Days Before Deadline</label>
-                            <input type="number" name="reminder_days" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'reminder_days', '7')) ?>"
-                                   min="1" placeholder="7">
-                        </div>
-                        <div class="form-group">
-                            <label>Admin Notification Email</label>
-                            <input type="email" name="admin_email" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'admin_email', 'admin@le.ac.uk')) ?>"
-                                   placeholder="admin@le.ac.uk">
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- API Keys -->
-            <div class="panel" style="margin-bottom:2rem;">
-                <div class="panel-header">
-                    <h3>🔑 API Configuration</h3>
-                    <p>Configure external service API keys</p>
-                </div>
-                <div class="panel-body">
-                    <div class="form-group">
-                        <label>Google Maps API Key</label>
-                        <input type="text" name="google_maps_api_key" class="form-input"
-                               value="<?= htmlspecialchars(getSetting($settings, 'google_maps_api_key', '')) ?>"
-                               placeholder="Enter Google Maps API Key">
-                        <small style="color:var(--muted);display:block;margin-top:0.5rem;">
-                            Required for map view features
-                        </small>
-                    </div>
-                    <div class="form-group">
-                        <label>Google Calendar API Key</label>
-                        <input type="text" name="google_calendar_api_key" class="form-input"
-                               value="<?= htmlspecialchars(getSetting($settings, 'google_calendar_api_key', '')) ?>"
-                               placeholder="Enter Google Calendar API Key">
-                        <small style="color:var(--muted);display:block;margin-top:0.5rem;">
-                            Required for calendar integration
-                        </small>
-                    </div>
-                </div>
-            </div>
-
-            <!-- System Preferences -->
-            <div class="panel" style="margin-bottom:2rem;">
-                <div class="panel-header">
-                    <h3>⚙️ System Preferences</h3>
-                    <p>General system configuration</p>
-                </div>
-                <div class="panel-body">
-                    <div class="form-grid">
-                        <div class="form-group">
-                            <label>Max File Upload Size (MB)</label>
-                            <input type="number" name="max_upload_size" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'max_upload_size', '10')) ?>"
-                                   min="1" max="50" placeholder="10">
-                        </div>
-                        <div class="form-group">
-                            <label>Allowed File Types</label>
-                            <input type="text" name="allowed_file_types" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'allowed_file_types', 'pdf,docx,xlsx,jpg,png')) ?>"
-                                   placeholder="pdf, docx, xlsx, jpg, png">
-                        </div>
-                        <div class="form-group">
-                            <label>Items Per Page</label>
-                            <input type="number" name="items_per_page" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'items_per_page', '25')) ?>"
-                                   min="5" max="100" placeholder="25">
-                        </div>
-                        <div class="form-group">
-                            <label>Session Timeout (minutes)</label>
-                            <input type="number" name="session_timeout" class="form-input"
-                                   value="<?= htmlspecialchars(getSetting($settings, 'session_timeout', '120')) ?>"
-                                   min="15" placeholder="120">
-                        </div>
-                        <div class="form-group full-col">
-                            <label style="display:flex;align-items:center;gap:0.75rem;">
-                                <input type="checkbox" name="maintenance_mode"
-                                       value="1" <?= getSetting($settings, 'maintenance_mode')==='1'?'checked':'' ?>>
-                                Enable Maintenance Mode (blocks non-admin users)
-                            </label>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div style="display:flex;justify-content:flex-end;gap:1rem;">
+            <div style="display:flex;justify-content:flex-end;gap:1rem;padding-bottom:2rem;">
                 <a href="/inplace/admin/dashboard.php" class="btn btn-ghost">Cancel</a>
-                <button type="submit" class="btn btn-primary">💾 Save Settings</button>
+                <button type="submit" name="save_settings" class="btn btn-primary">Save Settings</button>
             </div>
 
         </form>

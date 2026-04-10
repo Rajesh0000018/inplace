@@ -1,12 +1,12 @@
 <?php
 session_start();
 require_once 'config/db.php';
+require_once 'config/app_config.php';
+loadAppConfig($pdo);
 
-// ═══════════════════════════════════════════════════════
-// reCAPTCHA Configuration
-// ═══════════════════════════════════════════════════════
-define('RECAPTCHA_SITE_KEY', '6Ld4cogsAAAAAG9o_s6-zM8Qh2FZM9ZXwXuMHLHg');  
-define('RECAPTCHA_SECRET_KEY', '6Ld4cogsAAAAAKxokdWeL7-fvfJHNBNKILLSrSxE');
+// reCAPTCHA keys — configured via Admin → Settings
+define('RECAPTCHA_SITE_KEY',   appConfig('recaptcha_site_key',   ''));
+define('RECAPTCHA_SECRET_KEY', appConfig('recaptcha_secret_key', ''));
 
 // If already logged in, redirect to dashboard
 if (!empty($_SESSION['user'])) {
@@ -24,71 +24,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $recaptchaResponse = $_POST['g-recaptcha-response'] ?? '';
     
     // ═══════════════════════════════════════════════════════
-    // VERIFY reCAPTCHA
+    // VERIFY reCAPTCHA (skipped if keys not yet configured in Settings)
     // ═══════════════════════════════════════════════════════
-    if (empty($recaptchaResponse)) {
-        $error = "Please complete the reCAPTCHA verification.";
-    } else {
-        // Verify reCAPTCHA with Google
-        $verifyURL = 'https://www.google.com/recaptcha/api/siteverify';
-        $verifyData = [
-            'secret' => RECAPTCHA_SECRET_KEY,
-            'response' => $recaptchaResponse,
-            'remoteip' => $_SERVER['REMOTE_ADDR']
-        ];
-        
-        $options = [
-            'http' => [
+    $recaptchaConfigured = RECAPTCHA_SITE_KEY !== '' && RECAPTCHA_SECRET_KEY !== '';
+    $recaptchaOk = true;
+
+    if ($recaptchaConfigured) {
+        if (empty($recaptchaResponse)) {
+            $error = "Please complete the reCAPTCHA verification.";
+            $recaptchaOk = false;
+        } else {
+            $verifyURL  = 'https://www.google.com/recaptcha/api/siteverify';
+            $context    = stream_context_create(['http' => [
                 'header'  => "Content-type: application/x-www-form-urlencoded\r\n",
                 'method'  => 'POST',
-                'content' => http_build_query($verifyData)
-            ]
-        ];
-        
-        $context  = stream_context_create($options);
-        $response = file_get_contents($verifyURL, false, $context);
-        $responseData = json_decode($response);
-        
-        if (!$responseData->success) {
-            $error = "reCAPTCHA verification failed. Please try again.";
-        } else {
-            // reCAPTCHA passed, proceed with login
-            if ($email && $password) {
-                // Fetch user
-                $stmt = $pdo->prepare("
-                    SELECT id, full_name, email, password, role, avatar_initials, approval_status, rejection_reason
-                    FROM users
-                    WHERE email = ?
-                ");
-                $stmt->execute([$email]);
-                $user = $stmt->fetch();
-                
-                if ($user && password_verify($password, $user['password'])) {
-                    // Check approval status
-                    if ($user['approval_status'] === 'pending') {
-                        $error = "Your account is pending admin approval. You will receive an email once your account is approved.";
-                    } elseif ($user['approval_status'] === 'rejected') {
-                        $reason = $user['rejection_reason'] ? " Reason: " . $user['rejection_reason'] : "";
-                        $error = "Your account registration was not approved.$reason Please contact the placement office for more information.";
-                    } else {
-                        // Approved - create session
-                        $_SESSION['user'] = [
-                            'id' => (int)$user['id'],
-                            'full_name' => $user['full_name'],
-                            'email' => $user['email'],
-                            'role' => $user['role'],
-                            'avatar_initials' => $user['avatar_initials']
-                        ];
-                        
-                        header("Location: dashboard.php");
-                        exit;
-                    }
+                'content' => http_build_query([
+                    'secret'   => RECAPTCHA_SECRET_KEY,
+                    'response' => $recaptchaResponse,
+                    'remoteip' => $_SERVER['REMOTE_ADDR']
+                ])
+            ]]);
+            $responseData = json_decode(file_get_contents($verifyURL, false, $context));
+            if (!$responseData->success) {
+                $error       = "reCAPTCHA verification failed. Please try again.";
+                $recaptchaOk = false;
+            }
+        }
+    }
+
+    if ($recaptchaOk) {
+        if ($email && $password) {
+            $stmt = $pdo->prepare("
+                SELECT id, full_name, email, password, role, avatar_initials, approval_status, rejection_reason
+                FROM users WHERE email = ?
+            ");
+            $stmt->execute([$email]);
+            $user = $stmt->fetch();
+
+            if ($user && password_verify($password, $user['password'])) {
+                if ($user['approval_status'] === 'pending') {
+                    $error = "Your account is pending admin approval. You will receive an email once your account is approved.";
+                } elseif ($user['approval_status'] === 'rejected') {
+                    $reason = $user['rejection_reason'] ? " Reason: " . $user['rejection_reason'] : "";
+                    $error  = "Your account registration was not approved.$reason Please contact the placement office for more information.";
                 } else {
-                    $error = "Invalid email or password.";
+                    $_SESSION['user'] = [
+                        'id'              => (int)$user['id'],
+                        'full_name'       => $user['full_name'],
+                        'email'           => $user['email'],
+                        'role'            => $user['role'],
+                        'avatar_initials' => $user['avatar_initials']
+                    ];
+                    header("Location: dashboard.php");
+                    exit;
                 }
             } else {
-                $error = "Please enter both email and password.";
+                $error = "Invalid email or password.";
             }
+        } else {
+            $error = "Please enter both email and password.";
         }
     }
 }
@@ -101,8 +95,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <title>Login - InPlace</title>
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
     
-    <!-- ⭐ Google reCAPTCHA Script -->
+    <?php if (RECAPTCHA_SITE_KEY !== ''): ?>
     <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+    <?php endif; ?>
     
     <style>
         * {
@@ -489,8 +484,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
 
                 <!-- ⭐ reCAPTCHA Widget -->
+                <?php if (RECAPTCHA_SITE_KEY !== ''): ?>
                 <div class="recaptcha-wrapper">
-                    <div class="g-recaptcha" 
+                    <div class="g-recaptcha"
                          data-sitekey="<?= RECAPTCHA_SITE_KEY ?>"
                          data-callback="onRecaptchaSuccess"></div>
                     
@@ -502,10 +498,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         Please complete the reCAPTCHA verification
                     </div>
                 </div>
+                <?php endif; ?>
 
                 <button type="submit" class="btn-primary" id="submitBtn">
                     Sign In
                 </button>
+
+                <p style="text-align:center;margin-top:1.25rem;font-size:0.9rem;color:#6b7a8d;">
+                    <a href="forgot-password.php" style="color:#e8a020;font-weight:600;text-decoration:none;">
+                        Forgot your password?
+                    </a>
+                </p>
             </form>
         </div>
     </div>
@@ -530,35 +533,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // ═══════════════════════════════════════════════════════
-        // reCAPTCHA Validation with Styled Error
-        // ═══════════════════════════════════════════════════════
+        // reCAPTCHA validation (only when widget is rendered)
+        <?php if (RECAPTCHA_SITE_KEY !== ''): ?>
         document.getElementById('loginForm').addEventListener('submit', function(e) {
             const recaptchaResponse = grecaptcha.getResponse();
             const errorMsg = document.getElementById('recaptchaError');
-            
             if (recaptchaResponse.length === 0) {
                 e.preventDefault();
-                
-                // Show error message
                 errorMsg.style.display = 'flex';
-                
-                // Scroll to error
                 errorMsg.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                
-                // Shake animation
                 errorMsg.classList.add('shake');
                 setTimeout(() => errorMsg.classList.remove('shake'), 500);
             } else {
-                // Hide error if reCAPTCHA is completed
                 errorMsg.style.display = 'none';
             }
         });
-        
-        // Hide error when user checks reCAPTCHA
         function onRecaptchaSuccess() {
             document.getElementById('recaptchaError').style.display = 'none';
         }
+        <?php endif; ?>
     </script>
 </body>
 </html>

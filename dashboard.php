@@ -13,7 +13,8 @@ switch ($role) {
     case 'student':  header("Location: /inplace/student/dashboard.php");  break;
     case 'tutor':    header("Location: /inplace/tutor/dashboard.php");     break;
     case 'provider': header("Location: /inplace/provider/dashboard.php"); break;
-    case 'admin':    header("Location: /inplace/admin/dashboard.php");     break;
+    case 'admin':    header("Location: /inplace/admin/dashboard.php");      break;
+    case 'director': header("Location: /inplace/director/dashboard.php"); break;
     default:
         session_destroy();
         header("Location: /inplace/index.php");

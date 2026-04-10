@@ -36,7 +36,7 @@ move_uploaded_file($_FILES['report_file']['tmp_name'], $destAbs);
 
 $stmt = $pdo->prepare("
   INSERT INTO documents (placement_id, uploaded_by, doc_type, file_name, file_path, file_size, status)
-  VALUES (?,?,?,?,?,?, 'pending')
+  VALUES (?,?,?,?,?,?, 'pending_review')
 ");
 $stmt->execute([
   $placement_id,

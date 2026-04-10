@@ -1,0 +1,74 @@
+<?php
+require_once __DIR__ . '/../../config/db.php';
+require_once __DIR__ . '/../../includes/auth.php';
+
+requireAuth('student');
+$userId = authId();
+
+$placementId = (int)($_POST['placement_id'] ?? 0);
+$docType     = $_POST['doc_type'] ?? 'other';
+
+$allowedTypes = ['offer_letter','job_description','interim_report','final_report','other'];
+if (!in_array($docType, $allowedTypes, true)) {
+    $docType = 'other';
+}
+
+$back = '/inplace/student/my-placement.php';
+
+// Validate placement belongs to this student
+if ($placementId <= 0) {
+    header("Location: $back?error=invalid");
+    exit;
+}
+
+$stmt = $pdo->prepare("SELECT id FROM placements WHERE id = ? AND student_id = ? LIMIT 1");
+$stmt->execute([$placementId, $userId]);
+if (!$stmt->fetch()) {
+    header("Location: $back?error=invalid");
+    exit;
+}
+
+// Validate file
+if (empty($_FILES['document']['name']) || $_FILES['document']['error'] !== UPLOAD_ERR_OK) {
+    header("Location: $back?error=upload_failed");
+    exit;
+}
+
+$allowed = ['application/pdf'];
+$mime    = mime_content_type($_FILES['document']['tmp_name']);
+if (!in_array($mime, $allowed, true)) {
+    header("Location: $back?error=invalid_type");
+    exit;
+}
+
+if ($_FILES['document']['size'] > 10 * 1024 * 1024) {
+    header("Location: $back?error=too_large");
+    exit;
+}
+
+// Save file
+$uploadDir = __DIR__ . '/../../assets/uploads/';
+if (!is_dir($uploadDir)) mkdir($uploadDir, 0775, true);
+
+$original = $_FILES['document']['name'];
+$safeName = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $original);
+$destRel  = 'assets/uploads/' . $safeName;
+$destAbs  = __DIR__ . '/../../' . $destRel;
+
+if (!move_uploaded_file($_FILES['document']['tmp_name'], $destAbs)) {
+    header("Location: $back?error=upload_failed");
+    exit;
+}
+
+$fileSize = round($_FILES['document']['size'] / 1024) . ' KB';
+
+// Determine status — reports need tutor review; other docs are auto-approved
+$status = in_array($docType, ['interim_report', 'final_report']) ? 'pending_review' : 'approved';
+
+$pdo->prepare("
+    INSERT INTO documents (placement_id, uploaded_by, doc_type, file_name, file_path, file_size, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+")->execute([$placementId, $userId, $docType, $original, $destRel, $fileSize, $status]);
+
+header("Location: $back?success=uploaded");
+exit;

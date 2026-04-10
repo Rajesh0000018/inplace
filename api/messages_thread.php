@@ -13,16 +13,30 @@ if ($withId <= 0) {
     exit;
 }
 
-$timeCol = 'sent_at';
+// Auto-detect column names
+$stmt2 = $pdo->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='messages'
+    AND COLUMN_NAME IN (?,?,?,?,?,?,?,?)");
+$stmt2->execute(['created_at','sent_at','timestamp','date_sent','sent_on','body','message','content']);
+$found = $stmt2->fetchAll(PDO::FETCH_COLUMN);
+
+$timeCol = null;
+foreach (['created_at','sent_at','timestamp','date_sent','sent_on'] as $c) {
+    if (in_array($c, $found, true)) { $timeCol = $c; break; }
+}
 $textCol = 'body';
+foreach (['body','message','content'] as $c) {
+    if (in_array($c, $found, true)) { $textCol = $c; break; }
+}
 
 // mark as read
 $stmt = $pdo->prepare("UPDATE messages SET is_read = 1 WHERE receiver_id = ? AND sender_id = ? AND is_read = 0");
 $stmt->execute([$userId, $withId]);
 
 // fetch messages newer than last id (only messages SENT BY OTHER PERSON)
+$timeSelect = $timeCol ? "`$timeCol` AS sent_at" : "NULL AS sent_at";
 $stmt = $pdo->prepare("
-    SELECT id, `$textCol` AS body, `$timeCol` AS sent_at
+    SELECT id, `$textCol` AS body, $timeSelect
     FROM messages
     WHERE sender_id = ? AND receiver_id = ? AND id > ?
     ORDER BY id ASC

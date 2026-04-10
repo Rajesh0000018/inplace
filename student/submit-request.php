@@ -1,6 +1,15 @@
 <?php
 require_once '../includes/auth.php';
 require_once '../config/db.php';
+require_once '../config/app_config.php';
+require_once '../includes/provider_token_helper.php';
+loadAppConfig($pdo);
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as MailException;
+require_once __DIR__ . '/../PHPMailer-master/src/Exception.php';
+require_once __DIR__ . '/../PHPMailer-master/src/PHPMailer.php';
+require_once __DIR__ . '/../PHPMailer-master/src/SMTP.php';
 
 requireAuth('student');
 
@@ -86,137 +95,332 @@ $success = '';
 $error   = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $isDraft = isset($_POST['action']) && $_POST['action'] === 'draft';
+
+    $companyName    = trim($_POST['company_name'] ?? '');
+    $companyAddress = trim($_POST['company_address'] ?? '');
+    $companyCity    = '';
+    $companyPostcode= '';
+    $sector         = trim($_POST['sector'] ?? '');
+    $supName        = trim($_POST['supervisor_name'] ?? '');
+    $supEmail       = trim($_POST['supervisor_email'] ?? '');
+    $supPhone       = trim($_POST['supervisor_phone'] ?? '');
+
+    // ── Supervisor email validation (submit only) ─────────────────
+    if (!$isDraft && $supEmail && $companyName) {
+        $companyWords = preg_split('/[\s\-&.,\/\(\)]+/', strtolower($companyName));
+        $emailLower   = strtolower($supEmail);
+        $companyInEmail = false;
+        foreach ($companyWords as $word) {
+            if (strlen($word) > 2 && strpos($emailLower, $word) !== false) {
+                $companyInEmail = true;
+                break;
+            }
+        }
+        if (!$companyInEmail) {
+            $error = "The supervisor email must contain the company name somewhere in the address (e.g., supervisor@deloitte.com or john.deloitte@gmail.com). The email domain should be from the company you are placed at: <strong>" . htmlspecialchars($companyName) . "</strong>.";
+        }
+    }
+
+    if (!$error) {
+        try {
+            $pdo->beginTransaction();
+
+            // Use lat/lng from Nominatim autocomplete if provided, else fall back to postcode geocoding
+            $postLat = isset($_POST['company_lat']) && is_numeric($_POST['company_lat']) ? (float)$_POST['company_lat'] : null;
+            $postLng = isset($_POST['company_lng']) && is_numeric($_POST['company_lng']) ? (float)$_POST['company_lng'] : null;
+
+            if ($postLat !== null && $postLng !== null) {
+                $lat          = $postLat;
+                $lng          = $postLng;
+                $pcNormalised = normaliseUkPostcode($companyPostcode);
+            } else {
+                [$lat, $lng, $pcNormalised] = geocodeUkPostcode($companyPostcode);
+            }
+
+            // Insert or find company
+            $stmt = $pdo->prepare("SELECT id, latitude, longitude FROM companies WHERE name = ? AND COALESCE(postcode,'') = ? LIMIT 1");
+            $stmt->execute([$companyName, $pcNormalised ?? '']);
+            $existingCompany = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($existingCompany) {
+                $companyId = (int)$existingCompany['id'];
+                $stmt = $pdo->prepare("UPDATE companies SET address=?,city=?,postcode=?,sector=?,contact_name=?,contact_email=?,contact_phone=?,latitude=COALESCE(?,latitude),longitude=COALESCE(?,longitude) WHERE id=?");
+                $stmt->execute([$companyAddress,$companyCity,$pcNormalised,$sector,$supName,$supEmail,$supPhone,$lat,$lng,$companyId]);
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO companies (name,address,city,postcode,sector,contact_name,contact_email,contact_phone,latitude,longitude) VALUES (?,?,?,?,?,?,?,?,?,?)");
+                $stmt->execute([$companyName,$companyAddress,$companyCity,$pcNormalised,$sector,$supName,$supEmail,$supPhone,$lat,$lng]);
+                $companyId = (int)$pdo->lastInsertId();
+            }
+
+            // Determine status
+            $placementStatus = $isDraft ? 'draft' : 'awaiting_provider';
+
+            // Insert placement
+            $stmt = $pdo->prepare("INSERT INTO placements (student_id,company_id,role_title,job_description,start_date,end_date,salary,working_pattern,supervisor_name,supervisor_email,supervisor_phone,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+            $stmt->execute([
+                $userId, $companyId,
+                trim($_POST['role_title'] ?? ''),
+                trim($_POST['job_description'] ?? ''),
+                $_POST['start_date'] ?? '',
+                $_POST['end_date']   ?? '',
+                trim($_POST['salary'] ?? ''),
+                trim($_POST['working_pattern'] ?? ''),
+                $supName, $supEmail, $supPhone,
+                $placementStatus
+            ]);
+            $placementId = (int)$pdo->lastInsertId();
+
+            // Handle file uploads
+            if (!empty($_FILES['documents']['name'][0])) {
+                foreach ($_FILES['documents']['tmp_name'] as $i => $tmp) {
+                    if (!$tmp) continue;
+                    $original = $_FILES['documents']['name'][$i];
+                    $safe     = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $original);
+                    if (move_uploaded_file($tmp, '../assets/uploads/' . $safe)) {
+                        $size = round($_FILES['documents']['size'][$i] / 1024) . ' KB';
+                        $stmt = $pdo->prepare("INSERT INTO documents (placement_id,uploaded_by,doc_type,file_name,file_path,file_size) VALUES (?,?,'offer_letter',?,?,?)");
+                        $stmt->execute([$placementId, $userId, $original, $safe, $size]);
+                    }
+                }
+            }
+
+            // Audit log
+            $stmt = $pdo->prepare("INSERT INTO audit_log (user_id,action,table_affected,record_id,ip_address) VALUES (?,?,'placements',?,?)");
+            $stmt->execute([$userId, $isDraft ? 'saved_draft' : 'submitted_placement_request', $placementId, $_SERVER['REMOTE_ADDR'] ?? '']);
+
+            $pdo->commit();
+
+            // ── Send email to provider (submit only) ─────────────────
+            if (!$isDraft) {
+                // Get student name
+                $stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = ?");
+                $stmt->execute([$userId]);
+                $studentName = $stmt->fetchColumn();
+
+                $scheme      = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                $host        = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                $providerRequestsUrl = $scheme . '://' . $host . '/inplace/provider/requests.php';
+                $providerRegisterUrl = $scheme . '://' . $host . '/inplace/provider-register.php';
+
+                // Find provider user linked to this company
+                $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE role='provider' AND company_id=? AND is_active=1 LIMIT 1");
+                $stmt->execute([$companyId]);
+                $providerUser = $stmt->fetch();
+
+                $toEmail = $providerUser ? $providerUser['email'] : $supEmail;
+                $toName  = $providerUser ? $providerUser['full_name'] : $supName;
+
+                // Generate a single-use confirm token for quick approve/reject without login
+                $confirmUrl   = generateProviderToken($pdo, $placementId, $toEmail);
+                $actionUrl    = $providerUser ? $providerRequestsUrl : $providerRegisterUrl . '?company=' . urlencode($companyName) . '&email=' . urlencode($supEmail);
+                $actionLabel  = $providerUser ? 'Review in InPlace' : 'Register & Review Request';
+                $extraNote    = $providerUser ? '' : "<p style='color:#6b7a8d;font-size:0.85rem;margin-top:1rem;'>You have not yet registered on InPlace. You can still approve or decline using the quick-confirm link above, or click below to create an account for full access.</p>";
+
+                $mailCfg = require __DIR__ . '/../config/email_config.php';
+                $htmlBody = "
+                <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+                  <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
+                    <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
+                    <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>New Placement Authorisation Request</p>
+                  </div>
+                  <div style='padding:2rem;'>
+                    <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>Dear " . htmlspecialchars($toName) . ",</p>
+                    <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>A student has submitted a placement request for your company and requires your authorisation.</p>
+                    <table style='width:100%;border-collapse:collapse;margin-bottom:1.5rem;'>
+                      <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;width:40%;border-bottom:1px solid #e2e8f0;'>Student</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($studentName) . "</td></tr>
+                      <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Company</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($companyName) . "</td></tr>
+                      <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Role</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($_POST['role_title'] ?? '') . "</td></tr>
+                      <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Start Date</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($_POST['start_date'] ?? '') . "</td></tr>
+                      <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>End Date</td><td style='padding:0.75rem 1rem;color:#374151;'>" . htmlspecialchars($_POST['end_date'] ?? '') . "</td></tr>
+                    </table>
+                    <div style='text-align:center;margin:2rem 0;'>
+                      <a href='" . $confirmUrl . "' style='display:inline-block;padding:0.875rem 2rem;background-color:#059669;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;margin-bottom:0.75rem;'>
+                        ✓ Approve or Decline (no login needed)
+                      </a><br>
+                      <a href='" . $actionUrl . "' style='display:inline-block;padding:0.625rem 1.5rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:600;font-size:0.9rem;margin-top:0.5rem;'>
+                        " . $actionLabel . "
+                      </a>
+                    </div>
+                    $extraNote
+                    <p style='color:#6b7a8d;font-size:0.8rem;text-align:center;margin-top:1rem;'>
+                      The quick-confirm link expires in 7 days and can only be used once.
+                    </p>
+                    <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
+                  </div>
+                </div>";
+
+                $mail = new PHPMailer(true);
+                try {
+                    $mail->isSMTP();
+                    $mail->Host       = $mailCfg['smtp_host'];
+                    $mail->SMTPAuth   = true;
+                    $mail->Username   = $mailCfg['smtp_user'];
+                    $mail->Password   = $mailCfg['smtp_pass'];
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                    $mail->Port       = $mailCfg['smtp_port'];
+                    $mail->CharSet    = 'UTF-8';
+                    $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                    $mail->addAddress($toEmail, $toName);
+                    $mail->isHTML(true);
+                    $mail->Subject = 'InPlace - Placement Authorisation Required: ' . ($studentName ?? '') . ' at ' . $companyName;
+                    $mail->Body    = $htmlBody;
+                    $mail->AltBody = "New placement request from $studentName at $companyName. Review at: $actionUrl";
+                    $mail->send();
+                } catch (MailException $e) {
+                    error_log('Provider notification email failed: ' . $mail->ErrorInfo);
+                }
+            }
+
+            $success = $isDraft
+                ? "Draft saved successfully! You can come back and submit it later."
+                : "Your placement request has been submitted! The placement provider has been notified to confirm the details.";
+
+        } catch (Exception $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            $error = "Something went wrong. Please try again. (" . $e->getMessage() . ")";
+        }
+    }
+}
+
+// ── Load draft for editing if ?edit=id is passed ────────────────
+$draftData = null;
+$editId    = (int)($_GET['edit'] ?? 0);
+if ($editId > 0) {
+    $stmt = $pdo->prepare("
+        SELECT p.*, c.name AS company_name, c.address AS company_address,
+               c.sector, c.contact_name AS supervisor_name,
+               c.contact_email AS supervisor_email, c.contact_phone AS supervisor_phone,
+               c.latitude AS company_lat, c.longitude AS company_lng
+        FROM placements p
+        JOIN companies c ON p.company_id = c.id
+        WHERE p.id = ? AND p.student_id = ? AND p.status = 'draft'
+        LIMIT 1
+    ");
+    $stmt->execute([$editId, $userId]);
+    $draftData = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+}
+
+// ── Handle UPDATE of existing draft ─────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])) {
+    $editPlacementId = (int)$_POST['edit_placement_id'];
+    $isDraft = isset($_POST['action']) && $_POST['action'] === 'draft';
+
+    $companyName    = trim($_POST['company_name'] ?? '');
+    $companyAddress = trim($_POST['company_address'] ?? '');
+    $sector         = trim($_POST['sector'] ?? '');
+    $supName        = trim($_POST['supervisor_name'] ?? '');
+    $supEmail       = trim($_POST['supervisor_email'] ?? '');
+    $supPhone       = trim($_POST['supervisor_phone'] ?? '');
+
     try {
         $pdo->beginTransaction();
 
-        // POST values
-        $companyName    = trim($_POST['company_name'] ?? '');
-        $companyAddress = trim($_POST['company_address'] ?? '');
-        $companyCity    = trim($_POST['company_city'] ?? '');
-        $companyPostcode= trim($_POST['company_postcode'] ?? '');
-        $sector         = trim($_POST['sector'] ?? '');
+        $postLat = isset($_POST['company_lat']) && is_numeric($_POST['company_lat']) ? (float)$_POST['company_lat'] : null;
+        $postLng = isset($_POST['company_lng']) && is_numeric($_POST['company_lng']) ? (float)$_POST['company_lng'] : null;
 
-        $supName  = trim($_POST['supervisor_name'] ?? '');
-        $supEmail = trim($_POST['supervisor_email'] ?? '');
-        $supPhone = trim($_POST['supervisor_phone'] ?? '');
+        // Fetch current company_id for this draft
+        $stmt = $pdo->prepare("SELECT company_id FROM placements WHERE id = ? AND student_id = ? AND status = 'draft'");
+        $stmt->execute([$editPlacementId, $userId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // ✅ Get lat/lng from postcode (UK)
-        [$lat, $lng, $pcNormalised] = geocodeUkPostcode($companyPostcode);
+        if (!$row) throw new Exception("Draft not found.");
+        $companyId = (int)$row['company_id'];
 
-        // 1) Insert OR find company (avoid duplicates by name+postcode)
-        //    If exists, reuse it, and update lat/lng if empty.
-        $stmt = $pdo->prepare("
-            SELECT id, latitude, longitude
-            FROM companies
-            WHERE name = ? AND COALESCE(postcode,'') = ?
-            LIMIT 1
-        ");
-        $stmt->execute([$companyName, $pcNormalised ?? '']);
-        $existingCompany = $stmt->fetch(PDO::FETCH_ASSOC);
+        // Update company
+        $pdo->prepare("
+            UPDATE companies SET name=?, address=?, sector=?,
+                contact_name=?, contact_email=?, contact_phone=?,
+                latitude=COALESCE(?,latitude), longitude=COALESCE(?,longitude)
+            WHERE id=?
+        ")->execute([$companyName, $companyAddress, $sector, $supName, $supEmail, $supPhone, $postLat, $postLng, $companyId]);
 
-        if ($existingCompany) {
-            $companyId = (int)$existingCompany['id'];
-
-            // update details (and lat/lng if we got values)
-            $stmt = $pdo->prepare("
-                UPDATE companies
-                SET address = ?, city = ?, postcode = ?, sector = ?,
-                    contact_name = ?, contact_email = ?, contact_phone = ?,
-                    latitude = COALESCE(?, latitude),
-                    longitude = COALESCE(?, longitude)
-                WHERE id = ?
-            ");
-            $stmt->execute([
-                $companyAddress,
-                $companyCity,
-                $pcNormalised,
-                $sector,
-                $supName,
-                $supEmail,
-                $supPhone,
-                $lat,
-                $lng,
-                $companyId
-            ]);
-        } else {
-            // insert new company (includes postcode + lat/lng)
-            $stmt = $pdo->prepare("
-                INSERT INTO companies (name, address, city, postcode, sector, contact_name, contact_email, contact_phone, latitude, longitude)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ");
-            $stmt->execute([
-                $companyName,
-                $companyAddress,
-                $companyCity,
-                $pcNormalised,
-                $sector,
-                $supName,
-                $supEmail,
-                $supPhone,
-                $lat,
-                $lng
-            ]);
-            $companyId = (int)$pdo->lastInsertId();
-        }
-
-        // 2) Insert placement
-        $stmt = $pdo->prepare("
-            INSERT INTO placements
-                (student_id, company_id, role_title, job_description,
-                 start_date, end_date, salary, working_pattern,
-                 supervisor_name, supervisor_email, supervisor_phone, status)
-            VALUES (?,?,?,?, ?,?,?,?, ?,?,?,'submitted')
-        ");
-        $stmt->execute([
-            $userId,
-            $companyId,
-            trim($_POST['role_title']      ?? ''),
+        // Update placement
+        $newStatus = $isDraft ? 'draft' : 'awaiting_provider';
+        $pdo->prepare("
+            UPDATE placements SET
+                role_title=?, job_description=?, start_date=?, end_date=?,
+                salary=?, working_pattern=?, supervisor_name=?, supervisor_email=?,
+                supervisor_phone=?, status=?
+            WHERE id=? AND student_id=?
+        ")->execute([
+            trim($_POST['role_title'] ?? ''),
             trim($_POST['job_description'] ?? ''),
-            $_POST['start_date']           ?? '',
-            $_POST['end_date']             ?? '',
-            trim($_POST['salary']          ?? ''),
+            $_POST['start_date'] ?? '',
+            $_POST['end_date']   ?? '',
+            trim($_POST['salary'] ?? ''),
             trim($_POST['working_pattern'] ?? ''),
-            $supName,
-            $supEmail,
-            $supPhone,
+            $supName, $supEmail, $supPhone,
+            $newStatus,
+            $editPlacementId, $userId
         ]);
-        $placementId = (int)$pdo->lastInsertId();
 
-        // 3) Handle file uploads
+        // Handle new file uploads
         if (!empty($_FILES['documents']['name'][0])) {
             foreach ($_FILES['documents']['tmp_name'] as $i => $tmp) {
                 if (!$tmp) continue;
-
                 $original = $_FILES['documents']['name'][$i];
                 $safe     = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $original);
-                $dest     = '../assets/uploads/' . $safe;
-
-                if (move_uploaded_file($tmp, $dest)) {
-                    $stmt = $pdo->prepare("
-                        INSERT INTO documents
-                            (placement_id, uploaded_by, doc_type, file_name, file_path, file_size)
-                        VALUES (?, ?, 'offer_letter', ?, ?, ?)
-                    ");
+                if (move_uploaded_file($tmp, '../assets/uploads/' . $safe)) {
                     $size = round($_FILES['documents']['size'][$i] / 1024) . ' KB';
-                    $stmt->execute([$placementId, $userId, $original, $safe, $size]);
+                    $pdo->prepare("INSERT INTO documents (placement_id,uploaded_by,doc_type,file_name,file_path,file_size,status) VALUES (?,?,'offer_letter',?,?,?,'pending_review')")
+                        ->execute([$editPlacementId, $userId, $original, $safe, $size]);
                 }
             }
         }
 
-        // 4) Audit log
-        $stmt = $pdo->prepare("
-            INSERT INTO audit_log (user_id, action, table_affected, record_id, ip_address)
-            VALUES (?, 'submitted_placement_request', 'placements', ?, ?)
-        ");
-        $stmt->execute([$userId, $placementId, $_SERVER['REMOTE_ADDR'] ?? '']);
-
         $pdo->commit();
 
-        $success = "Your placement request has been submitted successfully! The placement provider will be notified to confirm the details.";
+        if (!$isDraft) {
+            // Send provider email — reuse same logic as new submission
+            $stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = ?");
+            $stmt->execute([$userId]);
+            $studentName = $stmt->fetchColumn();
+
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
+
+            $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE role='provider' AND company_id=? AND is_active=1 LIMIT 1");
+            $stmt->execute([$companyId]);
+            $providerUser = $stmt->fetch();
+
+            $toEmail = $providerUser ? $providerUser['email'] : $supEmail;
+            $toName  = $providerUser ? $providerUser['full_name'] : $supName;
+
+            if ($toEmail) {
+                require_once '../includes/provider_token_helper.php';
+                $confirmUrl = generateProviderToken($pdo, $editPlacementId, $toEmail);
+                $mailCfg = require __DIR__ . '/../config/email_config.php';
+                $mail = new PHPMailer(true);
+                try {
+                    $mail->isSMTP();
+                    $mail->Host       = $mailCfg['smtp_host'];
+                    $mail->SMTPAuth   = true;
+                    $mail->Username   = $mailCfg['smtp_user'];
+                    $mail->Password   = $mailCfg['smtp_pass'];
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                    $mail->Port       = $mailCfg['smtp_port'];
+                    $mail->CharSet    = 'UTF-8';
+                    $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                    $mail->addAddress($toEmail, $toName);
+                    $mail->isHTML(true);
+                    $mail->Subject = 'InPlace - Placement Authorisation Required: ' . $studentName . ' at ' . $companyName;
+                    $mail->Body    = "<p>New placement request from $studentName at $companyName. <a href='$confirmUrl'>Approve or Decline</a></p>";
+                    $mail->AltBody = "New placement request from $studentName at $companyName. Review at: $confirmUrl";
+                    $mail->send();
+                } catch (MailException $e) {
+                    error_log('Provider notification email failed: ' . $mail->ErrorInfo);
+                }
+            }
+        }
+
+        $success = $isDraft
+            ? "Draft updated successfully!"
+            : "Your placement request has been submitted! The provider has been notified.";
 
     } catch (Exception $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
-        $error = "Something went wrong. Please try again. (" . $e->getMessage() . ")";
+        $error = "Update failed: " . $e->getMessage();
     }
 }
 
@@ -276,7 +480,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
         <div class="panel">
             <div class="panel-header">
                 <div>
-                    <h3>New Placement Authorisation Request</h3>
+                    <h3><?= $draftData ? 'Edit Draft Request' : 'New Placement Authorisation Request' ?></h3>
                     <p>All fields marked * are required. The provider will be asked to confirm the details.</p>
                 </div>
                 <span class="badge badge-pending">Draft</span>
@@ -284,6 +488,9 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
 
             <div class="panel-body">
                 <form method="POST" enctype="multipart/form-data">
+                    <?php if ($draftData): ?>
+                    <input type="hidden" name="edit_placement_id" value="<?= (int)$draftData['id'] ?>">
+                    <?php endif; ?>
 
                     <!-- SECTION 1 -->
                     <div style="font-size:0.8125rem;font-weight:700;text-transform:uppercase;
@@ -298,29 +505,29 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                             <label>Company Name <span style="color:var(--danger);">*</span></label>
                             <input type="text" name="company_name" required
                                    placeholder="e.g., Rolls-Royce plc"
-                                   value="<?= htmlspecialchars($_POST['company_name'] ?? '') ?>">
-                        </div>
-
-                        <div class="form-group">
-                            <label>UK Postcode <span style="color:var(--danger);">*</span></label>
-                            <input type="text" name="company_postcode" required
-                                   placeholder="e.g., LE1 7RH"
-                                   value="<?= htmlspecialchars($_POST['company_postcode'] ?? '') ?>">
-                            <small style="color:var(--muted);">We use this to save latitude/longitude for navigation.</small>
-                        </div>
-
-                        <div class="form-group">
-                            <label>Company City / Town <span style="color:var(--danger);">*</span></label>
-                            <input type="text" name="company_city" required
-                                   placeholder="e.g., Derby"
-                                   value="<?= htmlspecialchars($_POST['company_city'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['company_name'] ?? $draftData['company_name'] ?? '') ?>">
                         </div>
 
                         <div class="form-group full-col">
                             <label>Full Company Address</label>
-                            <input type="text" name="company_address"
-                                   placeholder="Street, City, Postcode"
-                                   value="<?= htmlspecialchars($_POST['company_address'] ?? '') ?>">
+                            <div style="position:relative;">
+                                <input type="text" id="addressSearch" name="company_address"
+                                       autocomplete="off"
+                                       placeholder="Start typing a street, city or postcode…"
+                                       style="width:100%;"
+                                       value="<?= htmlspecialchars($_POST['company_address'] ?? $draftData['company_address'] ?? '') ?>">
+                                <div id="addressSuggestions"
+                                     style="display:none;position:absolute;top:100%;left:0;right:0;
+                                            background:white;border:2px solid var(--border);
+                                            border-top:none;border-radius:0 0 10px 10px;
+                                            box-shadow:0 4px 12px rgba(0,0,0,0.15);
+                                            z-index:999;max-height:220px;overflow-y:auto;"></div>
+                            </div>
+                            <input type="hidden" name="company_lat" id="company_lat"
+                                   value="<?= htmlspecialchars($_POST['company_lat'] ?? $draftData['company_lat'] ?? '') ?>">
+                            <input type="hidden" name="company_lng" id="company_lng"
+                                   value="<?= htmlspecialchars($_POST['company_lng'] ?? $draftData['company_lng'] ?? '') ?>">
+                            <small style="color:var(--muted);">Type an address or postcode and select from the suggestions.</small>
                         </div>
 
                         <div class="form-group">
@@ -341,7 +548,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                                     'Other',
                                 ];
                                 foreach ($sectors as $s) {
-                                    $sel = (($_POST['sector'] ?? '') === $s) ? 'selected' : '';
+                                    $sel = (($_POST['sector'] ?? $draftData['sector'] ?? '') === $s) ? 'selected' : '';
                                     echo "<option value=\"" . htmlspecialchars($s) . "\" $sel>" . htmlspecialchars($s) . "</option>";
                                 }
                                 ?>
@@ -352,13 +559,13 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                             <label>Role / Job Title <span style="color:var(--danger);">*</span></label>
                             <input type="text" name="role_title" required
                                    placeholder="e.g., Software Engineering Intern"
-                                   value="<?= htmlspecialchars($_POST['role_title'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['role_title'] ?? $draftData['role_title'] ?? '') ?>">
                         </div>
 
                         <div class="form-group full-col">
                             <label>Job Description <span style="color:var(--danger);">*</span></label>
                             <textarea name="job_description" required rows="4"
-                                      placeholder="Describe the role, responsibilities, technologies, and skills involved..."><?= htmlspecialchars($_POST['job_description'] ?? '') ?></textarea>
+                                      placeholder="Describe the role, responsibilities, technologies, and skills involved..."><?= htmlspecialchars($_POST['job_description'] ?? $draftData['job_description'] ?? '') ?></textarea>
                         </div>
 
                     </div>
@@ -375,20 +582,20 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                         <div class="form-group">
                             <label>Start Date <span style="color:var(--danger);">*</span></label>
                             <input type="date" name="start_date" required
-                                   value="<?= htmlspecialchars($_POST['start_date'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['start_date'] ?? $draftData['start_date'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
                             <label>End Date <span style="color:var(--danger);">*</span></label>
                             <input type="date" name="end_date" required
-                                   value="<?= htmlspecialchars($_POST['end_date'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['end_date'] ?? $draftData['end_date'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
                             <label>Salary (Annual)</label>
                             <input type="text" name="salary"
                                    placeholder="e.g., £22,000"
-                                   value="<?= htmlspecialchars($_POST['salary'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['salary'] ?? $draftData['salary'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
@@ -402,7 +609,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                                     "Remote",
                                     "Part-time"
                                 ];
-                                $cur = $_POST['working_pattern'] ?? "Full-time (37.5 hrs/week)";
+                                $cur = $_POST['working_pattern'] ?? $draftData['working_pattern'] ?? "Full-time (37.5 hrs/week)";
                                 foreach ($patterns as $p) {
                                     $sel = ($cur === $p) ? 'selected' : '';
                                     echo "<option value=\"" . htmlspecialchars($p) . "\" $sel>" . htmlspecialchars($p) . "</option>";
@@ -426,7 +633,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                             <label>Supervisor Full Name <span style="color:var(--danger);">*</span></label>
                             <input type="text" name="supervisor_name" required
                                    placeholder="e.g., Mark Henderson"
-                                   value="<?= htmlspecialchars($_POST['supervisor_name'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['supervisor_name'] ?? $draftData['supervisor_name'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
@@ -440,14 +647,14 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                             <label>Supervisor Email <span style="color:var(--danger);">*</span></label>
                             <input type="email" name="supervisor_email" required
                                    placeholder="supervisor@company.com"
-                                   value="<?= htmlspecialchars($_POST['supervisor_email'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['supervisor_email'] ?? $draftData['supervisor_email'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
                             <label>Supervisor Phone</label>
                             <input type="tel" name="supervisor_phone"
                                    placeholder="+44 7700 000000"
-                                   value="<?= htmlspecialchars($_POST['supervisor_phone'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['supervisor_phone'] ?? $draftData['supervisor_phone'] ?? '') ?>">
                         </div>
 
                     </div>
@@ -537,6 +744,21 @@ if (zone) {
     });
 }
 
+// Supervisor email must contain company name
+document.querySelector('form').addEventListener('submit', function(e) {
+    const btn = e.submitter;
+    if (btn && btn.value === 'draft') return; // skip for drafts
+    const company = (document.querySelector('[name="company_name"]').value || '').toLowerCase();
+    const email   = (document.querySelector('[name="supervisor_email"]').value || '').toLowerCase();
+    if (!company || !email) return;
+    const words = company.split(/[\s\-&.,\/()]+/).filter(w => w.length > 2);
+    const ok = words.some(w => email.includes(w));
+    if (!ok) {
+        e.preventDefault();
+        alert('Supervisor email must contain the company name (e.g. supervisor@' + company.replace(/\s+/g,'') + '.com or john.' + company.replace(/\s+/g,'') + '@gmail.com).');
+    }
+}, true); // capture phase so it runs before the date check listener
+
 // Date validation: end must be after start
 document.querySelector('form').addEventListener('submit', function(e) {
     const start = document.querySelector('[name="start_date"]').value;
@@ -546,6 +768,71 @@ document.querySelector('form').addEventListener('submit', function(e) {
         alert('End date must be after start date.');
     }
 });
+
+// ── Nominatim address autocomplete ─────────────────────────────────
+(function () {
+    const addrInput   = document.getElementById('addressSearch');
+    const addrDrop    = document.getElementById('addressSuggestions');
+    if (!addrInput) return;
+
+    let timer = null;
+
+    addrInput.addEventListener('input', function () {
+        clearTimeout(timer);
+        const q = this.value.trim();
+        if (q.length < 3) { addrDrop.style.display = 'none'; return; }
+        timer = setTimeout(() => fetchSuggestions(q), 350);
+    });
+
+    document.addEventListener('click', function (e) {
+        if (!addrInput.contains(e.target) && !addrDrop.contains(e.target)) {
+            addrDrop.style.display = 'none';
+        }
+    });
+
+    function fetchSuggestions(q) {
+        const url = 'https://nominatim.openstreetmap.org/search?format=json&countrycodes=gb&addressdetails=1&limit=6&q=' + encodeURIComponent(q);
+        fetch(url, { headers: { 'Accept-Language': 'en', 'User-Agent': 'inplace-student-form/1.0' } })
+            .then(r => r.json())
+            .then(data => showSuggestions(data))
+            .catch(() => { addrDrop.style.display = 'none'; });
+    }
+
+    function showSuggestions(results) {
+        addrDrop.innerHTML = '';
+        if (!results || results.length === 0) { addrDrop.style.display = 'none'; return; }
+        results.forEach(item => {
+            const div = document.createElement('div');
+            div.style.cssText = 'padding:0.625rem 1rem;cursor:pointer;font-size:0.875rem;border-bottom:1px solid #f0f0f0;color:#2c3e50;';
+            div.textContent = item.display_name;
+            div.addEventListener('mouseenter', () => div.style.background = '#f8f5f0');
+            div.addEventListener('mouseleave', () => div.style.background = '');
+            div.addEventListener('mousedown', e => e.preventDefault()); // prevent blur before click
+            div.addEventListener('click', () => selectSuggestion(item));
+            addrDrop.appendChild(div);
+        });
+        addrDrop.style.display = 'block';
+    }
+
+    function selectSuggestion(item) {
+        addrInput.value = item.display_name;
+        document.getElementById('company_lat').value = item.lat;
+        document.getElementById('company_lng').value = item.lon;
+
+        // Auto-fill city and postcode from address details (only if field is empty)
+        const addr = item.address || {};
+        const city     = addr.city || addr.town || addr.village || addr.county || '';
+        const postcode = addr.postcode || '';
+
+        const cityInput = document.querySelector('[name="company_city"]');
+        if (cityInput && !cityInput.value && city) cityInput.value = city;
+
+        const pcInput = document.querySelector('[name="company_postcode"]');
+        if (pcInput && !pcInput.value && postcode) pcInput.value = postcode;
+
+        addrDrop.style.display = 'none';
+    }
+}());
 </script>
 
 <?php include '../includes/footer.php'; ?>

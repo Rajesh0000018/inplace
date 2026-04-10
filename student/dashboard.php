@@ -85,6 +85,32 @@ if ($placement) {
     $progressPct = $total > 0 ? min(100, round(($elapsed / $total) * 100)) : 0;
 }
 
+// ── Unread announcements preview ─────────────────────────────────
+$unreadAnnouncements = [];
+try {
+    $stmt = $pdo->prepare("SELECT academic_year, programme_type FROM users WHERE id = ?");
+    $stmt->execute([$userId]);
+    $meInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    $stmt = $pdo->prepare("
+        SELECT a.id, a.title, a.body, a.is_pinned, a.created_at,
+               u.full_name AS author_name
+        FROM announcements a
+        JOIN users u ON a.author_id = u.id
+        WHERE (a.expires_at IS NULL OR a.expires_at >= CURDATE())
+          AND (a.audience = 'all'
+               OR (a.audience = 'year'      AND a.target_value = ?)
+               OR (a.audience = 'programme' AND a.target_value = ?))
+          AND a.id NOT IN (
+              SELECT announcement_id FROM announcement_reads WHERE student_id = ?
+          )
+        ORDER BY a.is_pinned DESC, a.created_at DESC
+        LIMIT 3
+    ");
+    $stmt->execute([$meInfo['academic_year'] ?? '', $meInfo['programme_type'] ?? '', $userId]);
+    $unreadAnnouncements = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {}
+
 // ── Status tracker steps ─────────────────────────────────────────
 //    Map DB status to which steps are 'done' vs 'active'
 $statusMap = [
@@ -104,6 +130,57 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
     <?php include '../includes/topbar.php'; ?>
 
     <div class="page-content">
+
+        <!-- ═══════════════════════════════════════════════════════
+             ANNOUNCEMENTS BANNER (unread only)
+        ════════════════════════════════════════════════════════ -->
+        <?php if (!empty($unreadAnnouncements)): ?>
+        <div style="background:linear-gradient(135deg,#0c1b33,#1a2d4d);border-radius:var(--radius);
+                    padding:1.25rem 1.75rem;margin-bottom:1.5rem;display:flex;
+                    align-items:flex-start;gap:1.25rem;">
+            <span style="font-size:2rem;flex-shrink:0;margin-top:0.1rem;">📢</span>
+            <div style="flex:1;min-width:0;">
+                <div style="display:flex;align-items:center;justify-content:space-between;
+                            gap:1rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+                    <p style="font-weight:700;color:white;font-size:0.9375rem;">
+                        <?= count($unreadAnnouncements) ?> new announcement<?= count($unreadAnnouncements) > 1 ? 's' : '' ?> from your placement team
+                    </p>
+                    <a href="/inplace/student/announcements.php"
+                       style="font-size:0.8125rem;color:rgba(255,255,255,0.7);text-decoration:none;
+                              white-space:nowrap;font-weight:500;"
+                       onmouseover="this.style.color='white'"
+                       onmouseout="this.style.color='rgba(255,255,255,0.7)'">
+                        View all →
+                    </a>
+                </div>
+                <?php foreach ($unreadAnnouncements as $ann): ?>
+                <a href="/inplace/student/announcements.php"
+                   style="display:block;background:rgba(255,255,255,0.08);border-radius:8px;
+                          padding:0.75rem 1rem;margin-bottom:0.5rem;text-decoration:none;
+                          border:1px solid rgba(255,255,255,0.1);transition:background 0.2s;"
+                   onmouseover="this.style.background='rgba(255,255,255,0.14)'"
+                   onmouseout="this.style.background='rgba(255,255,255,0.08)'">
+                    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.2rem;">
+                        <?php if ($ann['is_pinned']): ?>
+                        <span style="font-size:0.7rem;background:rgba(232,160,32,0.3);color:#fcd34d;
+                                     font-weight:700;padding:0.1rem 0.4rem;border-radius:3px;">📌 PINNED</span>
+                        <?php endif; ?>
+                        <span style="font-size:0.8rem;color:rgba(255,255,255,0.5);">
+                            <?= htmlspecialchars($ann['author_name']) ?> · <?= date('d M', strtotime($ann['created_at'])) ?>
+                        </span>
+                    </div>
+                    <p style="font-weight:600;color:white;font-size:0.9rem;margin-bottom:0.2rem;">
+                        <?= htmlspecialchars($ann['title']) ?>
+                    </p>
+                    <p style="font-size:0.8125rem;color:rgba(255,255,255,0.65);
+                              overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                        <?= htmlspecialchars($ann['body']) ?>
+                    </p>
+                </a>
+                <?php endforeach; ?>
+            </div>
+        </div>
+        <?php endif; ?>
 
         <!-- ═══════════════════════════════════════════════════════
              STATS GRID
@@ -222,7 +299,7 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
                                 ['label' => 'Submitted',          'icon' => '✓'],
                                 ['label' => 'Provider Confirmed', 'icon' => '✓'],
                                 ['label' => 'Tutor Review',       'icon' => '▶'],
-                                ['label' => 'Approved',           'icon' => '★'],
+                                ['label' => 'Approved',           'icon' => '★'],                            
                             ];
                             foreach ($steps as $i => $step):
                                 if ($i < $currentStep) $cls = 'done';
@@ -242,7 +319,13 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
                         <!-- Status message below tracker -->
                         <div style="margin-top:1.5rem;padding:1.25rem;background:var(--cream);border-radius:var(--radius-sm);border:1px solid var(--border);">
                             <?php if ($latestRequest['status'] === 'draft'): ?>
-                                <p style="font-size:0.875rem;color:var(--muted);">Your request is saved as a <strong style="color:var(--text)">draft</strong>. Submit it when you're ready.</p>
+                                <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;">
+                                    <p style="font-size:0.875rem;color:var(--muted);">Your request is saved as a <strong style="color:var(--text)">draft</strong>. Submit it when you're ready.</p>
+                                    <a href="/inplace/student/submit-request.php?edit=<?= (int)$latestRequest['id'] ?>"
+                                       class="btn btn-primary btn-sm">
+                                        ✏️ Continue Editing
+                                    </a>
+                                </div>
                             <?php elseif ($latestRequest['status'] === 'submitted' || $latestRequest['status'] === 'awaiting_provider'): ?>
                                 <p style="font-size:0.875rem;color:var(--muted);">Waiting for <strong style="color:var(--text)"><?= htmlspecialchars($latestRequest['company_name']) ?></strong> to confirm your placement details.</p>
                             <?php elseif ($latestRequest['status'] === 'awaiting_tutor'): ?>

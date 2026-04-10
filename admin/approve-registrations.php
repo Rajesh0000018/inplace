@@ -2,6 +2,13 @@
 require_once '../includes/auth.php';
 require_once '../config/db.php';
 
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as MailException;
+
+require_once __DIR__ . '/../PHPMailer-master/src/Exception.php';
+require_once __DIR__ . '/../PHPMailer-master/src/PHPMailer.php';
+require_once __DIR__ . '/../PHPMailer-master/src/SMTP.php';
+
 requireAuth('admin');
 
 $pageTitle = 'Registration Approvals';
@@ -28,20 +35,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ");
         $stmt->execute([$userId, $targetUserId]);
 
+        // Send approval email to the student
+        $studentStmt = $pdo->prepare("SELECT full_name, email FROM users WHERE id = ?");
+        $studentStmt->execute([$targetUserId]);
+        $student = $studentStmt->fetch();
+
+        if ($student) {
+            $mailCfg = require __DIR__ . '/../config/email_config.php';
+            $loginUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http')
+                        . '://' . $_SERVER['HTTP_HOST'] . '/inplace/login.php';
+
+            $htmlBody = "
+            <div style='font-family:\"DM Sans\",Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+              <div style='background:linear-gradient(135deg,#0c1b33 0%,#1a2d4d 100%);padding:2rem;text-align:center;'>
+                <h1 style='color:#ffffff;font-size:1.5rem;margin:0;font-family:Georgia,serif;'>InPlace</h1>
+                <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Registration Approved</p>
+              </div>
+              <div style='padding:2rem;'>
+                <h2 style='color:#0c1b33;font-family:Georgia,serif;margin-bottom:0.5rem;'>Welcome, " . htmlspecialchars($student['full_name']) . "!</h2>
+                <p style='color:#374151;font-size:1rem;line-height:1.6;margin-bottom:1.5rem;'>
+                  Your InPlace account has been <strong style='color:#10b981;'>approved</strong> by the admin.
+                  You can now log in and start your industrial placement journey.
+                </p>
+                <div style='background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.5rem;'>
+                  <p style='margin:0;color:#15803d;font-size:0.9rem;'>
+                    Your account is now active. Log in with your registered email address.
+                  </p>
+                </div>
+                <div style='text-align:center;margin:2rem 0;'>
+                  <a href='$loginUrl'
+                     style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;
+                            color:#ffffff !important;text-decoration:none;border-radius:10px;
+                            font-weight:700;font-size:1rem;border:2px solid #0c1b33;
+                            mso-padding-alt:0;'>
+                    Log In to InPlace
+                  </a>
+                </div>
+                <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>
+                  This is an automated notification from InPlace.
+                </p>
+              </div>
+            </div>";
+
+            $altBody = "Hi {$student['full_name']},\n\nYour InPlace account has been approved! You can now log in at: $loginUrl\n\nWelcome aboard.";
+
+            $mail = new PHPMailer(true);
+            try {
+                $mail->isSMTP();
+                $mail->Host       = $mailCfg['smtp_host'];
+                $mail->SMTPAuth   = true;
+                $mail->Username   = $mailCfg['smtp_user'];
+                $mail->Password   = $mailCfg['smtp_pass'];
+                $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                $mail->Port       = $mailCfg['smtp_port'];
+                $mail->CharSet    = 'UTF-8';
+                $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                $mail->addAddress($student['email'], $student['full_name']);
+                $mail->isHTML(true);
+                $mail->Subject = 'InPlace - Your Registration Has Been Approved';
+                $mail->Body    = $htmlBody;
+                $mail->AltBody = $altBody;
+                $mail->send();
+            } catch (MailException $e) {
+                error_log('Approval email failed to ' . $student['email'] . ': ' . $mail->ErrorInfo);
+            }
+        }
+
         $actionMsg = "Student account approved successfully!";
         $actionType = 'success';
 
     } elseif ($targetUserId > 0 && $action === 'reject') {
-        $reason = trim($_POST['rejection_reason'] ?? '');
+        // Delete the user entirely so they can re-register with the same email next year
+        $pdo->prepare("DELETE FROM users WHERE id = ? AND approval_status = 'pending'")->execute([$targetUserId]);
 
-        $stmt = $pdo->prepare("
-            UPDATE users
-            SET approval_status = 'rejected', approved_by = ?, approved_at = NOW(), rejection_reason = ?
-            WHERE id = ?
-        ");
-        $stmt->execute([$userId, $reason, $targetUserId]);
-
-        $actionMsg = "Student registration rejected.";
+        $actionMsg = "Registration rejected and user record deleted. They can register again next year.";
         $actionType = 'warning';
     }
 }
@@ -51,9 +118,9 @@ $stmt = $pdo->query("
     SELECT
         id, full_name, email, academic_year, programme_type, created_at, approval_status
     FROM users
-    WHERE role = 'student' AND approval_status IN ('pending', 'approved', 'rejected')
+    WHERE role = 'student' AND approval_status IN ('pending', 'approved')
     ORDER BY
-        FIELD(approval_status, 'pending', 'approved', 'rejected'),
+        FIELD(approval_status, 'pending', 'approved'),
         created_at DESC
 ");
 $registrations = $stmt->fetchAll();
@@ -256,25 +323,22 @@ foreach ($registrations as $reg) {
   <div class="ip-modal" role="dialog" aria-modal="true" aria-labelledby="rejectTitle">
     <h3 id="rejectTitle" style="font-family:'Playfair Display',serif;font-size:1.375rem;
                    color:var(--danger);margin-bottom:0.5rem;">
-      ⚠️ Reject Registration
+      ⚠️ Reject &amp; Delete Registration
     </h3>
     <p id="rejectStudentName" style="color:var(--muted);font-size:0.9rem;margin-bottom:1.5rem;"></p>
+
+    <div style="background:#fff5f5;border:1px solid #fca5a5;border-radius:var(--radius-sm);
+                padding:0.875rem 1rem;margin-bottom:1.25rem;">
+      <p style="margin:0;color:var(--danger);font-size:0.9rem;">
+        This will <strong>permanently delete</strong> the user's record. They will be able to re-register next year with the same email.
+      </p>
+    </div>
 
     <form method="POST" id="rejectForm">
       <input type="hidden" name="user_id" id="rejectUserId">
       <input type="hidden" name="action" value="reject">
 
       <div style="margin-bottom:1.5rem;">
-        <label style="display:block;font-size:0.875rem;font-weight:500;
-                      color:var(--text);margin-bottom:0.5rem;">
-          Reason for rejection (optional)
-        </label>
-        <textarea name="rejection_reason" rows="4"
-                  placeholder="e.g., Not a third-year student, invalid email domain..."
-                  style="width:100%;padding:0.875rem 1rem;border:2px solid var(--border);
-                         border-radius:var(--radius-sm);font-family:inherit;
-                         font-size:0.9375rem;background:var(--cream);resize:vertical;"></textarea>
-      </div>
 
       <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
         <button type="button" class="btn btn-ghost" onclick="closeRejectModal()">Cancel</button>
