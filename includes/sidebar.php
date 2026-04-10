@@ -155,6 +155,11 @@
         <span class="nav-icon">🏢</span> Provider Directory
       </a>
 
+      <a href="/inplace/tutor/provider-meeting.php"
+         class="nav-item <?= ($activePage === 'provider-meetings') ? 'active' : '' ?>">
+        <span class="nav-icon">🤝</span> Provider Meetings
+      </a>
+
       <?php
         // At-risk badge: count of high-risk flagged placements
         $atRiskBadge = 0;

@@ -283,6 +283,147 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+// ── Load draft for editing if ?edit=id is passed ────────────────
+$draftData = null;
+$editId    = (int)($_GET['edit'] ?? 0);
+if ($editId > 0) {
+    $stmt = $pdo->prepare("
+        SELECT p.*, c.name AS company_name, c.address AS company_address,
+               c.sector, c.contact_name AS supervisor_name,
+               c.contact_email AS supervisor_email, c.contact_phone AS supervisor_phone,
+               c.latitude AS company_lat, c.longitude AS company_lng
+        FROM placements p
+        JOIN companies c ON p.company_id = c.id
+        WHERE p.id = ? AND p.student_id = ? AND p.status = 'draft'
+        LIMIT 1
+    ");
+    $stmt->execute([$editId, $userId]);
+    $draftData = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+}
+
+// ── Handle UPDATE of existing draft ─────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])) {
+    $editPlacementId = (int)$_POST['edit_placement_id'];
+    $isDraft = isset($_POST['action']) && $_POST['action'] === 'draft';
+
+    $companyName    = trim($_POST['company_name'] ?? '');
+    $companyAddress = trim($_POST['company_address'] ?? '');
+    $sector         = trim($_POST['sector'] ?? '');
+    $supName        = trim($_POST['supervisor_name'] ?? '');
+    $supEmail       = trim($_POST['supervisor_email'] ?? '');
+    $supPhone       = trim($_POST['supervisor_phone'] ?? '');
+
+    try {
+        $pdo->beginTransaction();
+
+        $postLat = isset($_POST['company_lat']) && is_numeric($_POST['company_lat']) ? (float)$_POST['company_lat'] : null;
+        $postLng = isset($_POST['company_lng']) && is_numeric($_POST['company_lng']) ? (float)$_POST['company_lng'] : null;
+
+        // Fetch current company_id for this draft
+        $stmt = $pdo->prepare("SELECT company_id FROM placements WHERE id = ? AND student_id = ? AND status = 'draft'");
+        $stmt->execute([$editPlacementId, $userId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$row) throw new Exception("Draft not found.");
+        $companyId = (int)$row['company_id'];
+
+        // Update company
+        $pdo->prepare("
+            UPDATE companies SET name=?, address=?, sector=?,
+                contact_name=?, contact_email=?, contact_phone=?,
+                latitude=COALESCE(?,latitude), longitude=COALESCE(?,longitude)
+            WHERE id=?
+        ")->execute([$companyName, $companyAddress, $sector, $supName, $supEmail, $supPhone, $postLat, $postLng, $companyId]);
+
+        // Update placement
+        $newStatus = $isDraft ? 'draft' : 'awaiting_provider';
+        $pdo->prepare("
+            UPDATE placements SET
+                role_title=?, job_description=?, start_date=?, end_date=?,
+                salary=?, working_pattern=?, supervisor_name=?, supervisor_email=?,
+                supervisor_phone=?, status=?
+            WHERE id=? AND student_id=?
+        ")->execute([
+            trim($_POST['role_title'] ?? ''),
+            trim($_POST['job_description'] ?? ''),
+            $_POST['start_date'] ?? '',
+            $_POST['end_date']   ?? '',
+            trim($_POST['salary'] ?? ''),
+            trim($_POST['working_pattern'] ?? ''),
+            $supName, $supEmail, $supPhone,
+            $newStatus,
+            $editPlacementId, $userId
+        ]);
+
+        // Handle new file uploads
+        if (!empty($_FILES['documents']['name'][0])) {
+            foreach ($_FILES['documents']['tmp_name'] as $i => $tmp) {
+                if (!$tmp) continue;
+                $original = $_FILES['documents']['name'][$i];
+                $safe     = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $original);
+                if (move_uploaded_file($tmp, '../assets/uploads/' . $safe)) {
+                    $size = round($_FILES['documents']['size'][$i] / 1024) . ' KB';
+                    $pdo->prepare("INSERT INTO documents (placement_id,uploaded_by,doc_type,file_name,file_path,file_size,status) VALUES (?,?,'offer_letter',?,?,?,'pending_review')")
+                        ->execute([$editPlacementId, $userId, $original, $safe, $size]);
+                }
+            }
+        }
+
+        $pdo->commit();
+
+        if (!$isDraft) {
+            // Send provider email — reuse same logic as new submission
+            $stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = ?");
+            $stmt->execute([$userId]);
+            $studentName = $stmt->fetchColumn();
+
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
+
+            $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE role='provider' AND company_id=? AND is_active=1 LIMIT 1");
+            $stmt->execute([$companyId]);
+            $providerUser = $stmt->fetch();
+
+            $toEmail = $providerUser ? $providerUser['email'] : $supEmail;
+            $toName  = $providerUser ? $providerUser['full_name'] : $supName;
+
+            if ($toEmail) {
+                require_once '../includes/provider_token_helper.php';
+                $confirmUrl = generateProviderToken($pdo, $editPlacementId, $toEmail);
+                $mailCfg = require __DIR__ . '/../config/email_config.php';
+                $mail = new PHPMailer(true);
+                try {
+                    $mail->isSMTP();
+                    $mail->Host       = $mailCfg['smtp_host'];
+                    $mail->SMTPAuth   = true;
+                    $mail->Username   = $mailCfg['smtp_user'];
+                    $mail->Password   = $mailCfg['smtp_pass'];
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                    $mail->Port       = $mailCfg['smtp_port'];
+                    $mail->CharSet    = 'UTF-8';
+                    $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                    $mail->addAddress($toEmail, $toName);
+                    $mail->isHTML(true);
+                    $mail->Subject = 'InPlace - Placement Authorisation Required: ' . $studentName . ' at ' . $companyName;
+                    $mail->Body    = "<p>New placement request from $studentName at $companyName. <a href='$confirmUrl'>Approve or Decline</a></p>";
+                    $mail->AltBody = "New placement request from $studentName at $companyName. Review at: $confirmUrl";
+                    $mail->send();
+                } catch (MailException $e) {
+                    error_log('Provider notification email failed: ' . $mail->ErrorInfo);
+                }
+            }
+        }
+
+        $success = $isDraft
+            ? "Draft updated successfully!"
+            : "Your placement request has been submitted! The provider has been notified.";
+
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $error = "Update failed: " . $e->getMessage();
+    }
+}
+
 // ── Check if student already has an active/pending placement ────
 $stmt = $pdo->prepare("
     SELECT id, status FROM placements
@@ -339,7 +480,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
         <div class="panel">
             <div class="panel-header">
                 <div>
-                    <h3>New Placement Authorisation Request</h3>
+                    <h3><?= $draftData ? 'Edit Draft Request' : 'New Placement Authorisation Request' ?></h3>
                     <p>All fields marked * are required. The provider will be asked to confirm the details.</p>
                 </div>
                 <span class="badge badge-pending">Draft</span>
@@ -347,6 +488,9 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
 
             <div class="panel-body">
                 <form method="POST" enctype="multipart/form-data">
+                    <?php if ($draftData): ?>
+                    <input type="hidden" name="edit_placement_id" value="<?= (int)$draftData['id'] ?>">
+                    <?php endif; ?>
 
                     <!-- SECTION 1 -->
                     <div style="font-size:0.8125rem;font-weight:700;text-transform:uppercase;
@@ -361,7 +505,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                             <label>Company Name <span style="color:var(--danger);">*</span></label>
                             <input type="text" name="company_name" required
                                    placeholder="e.g., Rolls-Royce plc"
-                                   value="<?= htmlspecialchars($_POST['company_name'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['company_name'] ?? $draftData['company_name'] ?? '') ?>">
                         </div>
 
                         <div class="form-group full-col">
@@ -371,7 +515,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                                        autocomplete="off"
                                        placeholder="Start typing a street, city or postcode…"
                                        style="width:100%;"
-                                       value="<?= htmlspecialchars($_POST['company_address'] ?? '') ?>">
+                                       value="<?= htmlspecialchars($_POST['company_address'] ?? $draftData['company_address'] ?? '') ?>">
                                 <div id="addressSuggestions"
                                      style="display:none;position:absolute;top:100%;left:0;right:0;
                                             background:white;border:2px solid var(--border);
@@ -380,9 +524,9 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                                             z-index:999;max-height:220px;overflow-y:auto;"></div>
                             </div>
                             <input type="hidden" name="company_lat" id="company_lat"
-                                   value="<?= htmlspecialchars($_POST['company_lat'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['company_lat'] ?? $draftData['company_lat'] ?? '') ?>">
                             <input type="hidden" name="company_lng" id="company_lng"
-                                   value="<?= htmlspecialchars($_POST['company_lng'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['company_lng'] ?? $draftData['company_lng'] ?? '') ?>">
                             <small style="color:var(--muted);">Type an address or postcode and select from the suggestions.</small>
                         </div>
 
@@ -404,7 +548,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                                     'Other',
                                 ];
                                 foreach ($sectors as $s) {
-                                    $sel = (($_POST['sector'] ?? '') === $s) ? 'selected' : '';
+                                    $sel = (($_POST['sector'] ?? $draftData['sector'] ?? '') === $s) ? 'selected' : '';
                                     echo "<option value=\"" . htmlspecialchars($s) . "\" $sel>" . htmlspecialchars($s) . "</option>";
                                 }
                                 ?>
@@ -415,13 +559,13 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                             <label>Role / Job Title <span style="color:var(--danger);">*</span></label>
                             <input type="text" name="role_title" required
                                    placeholder="e.g., Software Engineering Intern"
-                                   value="<?= htmlspecialchars($_POST['role_title'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['role_title'] ?? $draftData['role_title'] ?? '') ?>">
                         </div>
 
                         <div class="form-group full-col">
                             <label>Job Description <span style="color:var(--danger);">*</span></label>
                             <textarea name="job_description" required rows="4"
-                                      placeholder="Describe the role, responsibilities, technologies, and skills involved..."><?= htmlspecialchars($_POST['job_description'] ?? '') ?></textarea>
+                                      placeholder="Describe the role, responsibilities, technologies, and skills involved..."><?= htmlspecialchars($_POST['job_description'] ?? $draftData['job_description'] ?? '') ?></textarea>
                         </div>
 
                     </div>
@@ -438,20 +582,20 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                         <div class="form-group">
                             <label>Start Date <span style="color:var(--danger);">*</span></label>
                             <input type="date" name="start_date" required
-                                   value="<?= htmlspecialchars($_POST['start_date'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['start_date'] ?? $draftData['start_date'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
                             <label>End Date <span style="color:var(--danger);">*</span></label>
                             <input type="date" name="end_date" required
-                                   value="<?= htmlspecialchars($_POST['end_date'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['end_date'] ?? $draftData['end_date'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
                             <label>Salary (Annual)</label>
                             <input type="text" name="salary"
                                    placeholder="e.g., £22,000"
-                                   value="<?= htmlspecialchars($_POST['salary'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['salary'] ?? $draftData['salary'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
@@ -465,7 +609,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                                     "Remote",
                                     "Part-time"
                                 ];
-                                $cur = $_POST['working_pattern'] ?? "Full-time (37.5 hrs/week)";
+                                $cur = $_POST['working_pattern'] ?? $draftData['working_pattern'] ?? "Full-time (37.5 hrs/week)";
                                 foreach ($patterns as $p) {
                                     $sel = ($cur === $p) ? 'selected' : '';
                                     echo "<option value=\"" . htmlspecialchars($p) . "\" $sel>" . htmlspecialchars($p) . "</option>";
@@ -489,7 +633,7 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                             <label>Supervisor Full Name <span style="color:var(--danger);">*</span></label>
                             <input type="text" name="supervisor_name" required
                                    placeholder="e.g., Mark Henderson"
-                                   value="<?= htmlspecialchars($_POST['supervisor_name'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['supervisor_name'] ?? $draftData['supervisor_name'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
@@ -503,14 +647,14 @@ $existingPlacement = $stmt->fetch(PDO::FETCH_ASSOC);
                             <label>Supervisor Email <span style="color:var(--danger);">*</span></label>
                             <input type="email" name="supervisor_email" required
                                    placeholder="supervisor@company.com"
-                                   value="<?= htmlspecialchars($_POST['supervisor_email'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['supervisor_email'] ?? $draftData['supervisor_email'] ?? '') ?>">
                         </div>
 
                         <div class="form-group">
                             <label>Supervisor Phone</label>
                             <input type="tel" name="supervisor_phone"
                                    placeholder="+44 7700 000000"
-                                   value="<?= htmlspecialchars($_POST['supervisor_phone'] ?? '') ?>">
+                                   value="<?= htmlspecialchars($_POST['supervisor_phone'] ?? $draftData['supervisor_phone'] ?? '') ?>">
                         </div>
 
                     </div>

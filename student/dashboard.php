@@ -319,7 +319,13 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
                         <!-- Status message below tracker -->
                         <div style="margin-top:1.5rem;padding:1.25rem;background:var(--cream);border-radius:var(--radius-sm);border:1px solid var(--border);">
                             <?php if ($latestRequest['status'] === 'draft'): ?>
-                                <p style="font-size:0.875rem;color:var(--muted);">Your request is saved as a <strong style="color:var(--text)">draft</strong>. Submit it when you're ready.</p>
+                                <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;">
+                                    <p style="font-size:0.875rem;color:var(--muted);">Your request is saved as a <strong style="color:var(--text)">draft</strong>. Submit it when you're ready.</p>
+                                    <a href="/inplace/student/submit-request.php?edit=<?= (int)$latestRequest['id'] ?>"
+                                       class="btn btn-primary btn-sm">
+                                        ✏️ Continue Editing
+                                    </a>
+                                </div>
                             <?php elseif ($latestRequest['status'] === 'submitted' || $latestRequest['status'] === 'awaiting_provider'): ?>
                                 <p style="font-size:0.875rem;color:var(--muted);">Waiting for <strong style="color:var(--text)"><?= htmlspecialchars($latestRequest['company_name']) ?></strong> to confirm your placement details.</p>
                             <?php elseif ($latestRequest['status'] === 'awaiting_tutor'): ?>

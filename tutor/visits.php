@@ -160,7 +160,11 @@ foreach ($visits as $v) {
                 <a href="visits.php" class="btn btn-ghost btn-sm">✕ Clear</a>
             <?php endif; ?>
 
-            <div style="margin-left:auto;">
+            <div style="margin-left:auto;display:flex;gap:0.75rem;">
+                <button type="button" class="btn btn-ghost btn-sm"
+                        onclick="window.location='/inplace/tutor/provider-meeting.php'">
+                    🤝 Provider Meeting
+                </button>
                 <button type="button" class="btn btn-primary btn-sm"
                         onclick="window.location='/inplace/tutor/schedule-visit.php'">
                     + Schedule New Visit
