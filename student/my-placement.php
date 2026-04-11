@@ -258,7 +258,7 @@ unset($_SESSION['change_success'], $_SESSION['change_error']);
                                     · Uploaded <?= date('d M Y', strtotime($doc['uploaded_at'])) ?>
                                 </p>
                             </div>
-                            <a href="/inplace/assets/uploads/<?= htmlspecialchars($doc['file_path']) ?>"
+                            <a href="/inplace/<?= htmlspecialchars($doc['file_path']) ?>"
                                download
                                class="btn btn-ghost btn-sm">
                                 ⬇ Download

@@ -161,8 +161,8 @@ if ($filterStatus) {
     $where[]  = "d.status = ?";
     $params[] = $filterStatus;
 } else {
-    // Default: show pending and approved, hide rejected
-    $where[] = "d.status != 'rejected'";
+    // Default: show pending, approved and NULL status, hide rejected
+    $where[] = "(d.status IS NULL OR d.status != 'rejected')";
 }
 
 if ($filterSearch) {
@@ -464,7 +464,7 @@ $missing = $stmt->fetchAll();
                             <td>
                                 <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
                                     <!-- Download -->
-                                    <a href="/inplace/assets/uploads/<?= htmlspecialchars($r['file_path']) ?>"
+                                    <a href="/inplace/<?= htmlspecialchars($r['file_path']) ?>"
                                        download
                                        class="btn btn-ghost btn-sm">
                                         ⬇ Download

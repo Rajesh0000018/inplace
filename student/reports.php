@@ -161,7 +161,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 //
 function docDownloadUrl($doc) {
     if (!$doc || empty($doc['file_path'])) return '#';
-    return "/inplace/assets/uploads/" . rawurlencode($doc['file_path']);
+    return "/inplace/" . rawurlencode($doc['file_path']);
 }
 
 // Map DB status -> badge class + label

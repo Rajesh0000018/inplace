@@ -183,7 +183,7 @@ $documents = $docs->fetchAll();
                 <?php else: ?>
                     <div style="padding:1rem;display:flex;flex-wrap:wrap;gap:0.75rem;">
                         <?php foreach ($documents as $doc): ?>
-                        <a href="/inplace/assets/uploads/<?= urlencode($doc['file_name'] ?? $doc['file_path'] ?? '') ?>"
+                        <a href="/inplace/<?= urlencode($doc['file_path'] ?? '') ?>"
                            target="_blank"
                            style="display:inline-flex;align-items:center;gap:0.5rem;padding:0.5rem 1rem;
                                   border:1.5px solid var(--border);border-radius:var(--radius-sm);
