@@ -41,9 +41,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (isset($_POST['reschedule'])) {
             $note = trim($_POST['reschedule_note'] ?? '');
             // Send message to tutor asking for reschedule
-            $stmt = $pdo->prepare("
-                SELECT v.tutor_id FROM visits v WHERE v.id = ?
-            ");
+            $stmt = $pdo->prepare("SELECT v.tutor_id FROM visits v WHERE v.id = ?");
             $stmt->execute([$visitId]);
             $row = $stmt->fetch();
             if ($row && $row['tutor_id']) {
@@ -52,6 +50,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$userId, $row['tutor_id'], $body]);
             }
             $actionMsg  = "ℹ️ Reschedule request sent to your tutor.";
+            $actionType = "warning";
+
+        } elseif (isset($_POST['decline'])) {
+            $note = trim($_POST['decline_note'] ?? '');
+            $pdo->prepare("UPDATE visits SET status = 'declined', updated_at = NOW() WHERE id = ?")
+                ->execute([$visitId]);
+            // Notify tutor
+            $stmt = $pdo->prepare("SELECT v.tutor_id FROM visits v WHERE v.id = ?");
+            $stmt->execute([$visitId]);
+            $row = $stmt->fetch();
+            if ($row && $row['tutor_id']) {
+                $body = "Student declined visit #$visitId" . ($note ? ". Reason: $note" : ".");
+                $pdo->prepare("INSERT INTO messages (sender_id, receiver_id, body) VALUES (?,?,?)")
+                    ->execute([$userId, $row['tutor_id'], $body]);
+            }
+            $actionMsg  = "Visit declined. Your tutor has been notified.";
             $actionType = "warning";
         }
     }
