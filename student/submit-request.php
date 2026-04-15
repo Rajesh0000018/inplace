@@ -326,7 +326,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $success = $isDraft
                 ? "Draft saved successfully! You can come back and submit it later."
-                : "Your placement request has been submitted! The placement provider has been notified to confirm the details.";
+                : "Your placement request has been submitted! A notification was sent to: " . htmlspecialchars($toEmail ?? 'unknown') . ". The provider has been notified to confirm the details.";
 
         } catch (Exception $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
@@ -554,7 +554,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
 
         $success = $isDraft
             ? "Draft updated successfully!"
-            : "Your placement request has been submitted! The provider has been notified.";
+            : "Your placement request has been submitted! A notification was sent to: " . htmlspecialchars($toEmail ?? 'unknown') . ".";
 
     } catch (Exception $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
