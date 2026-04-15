@@ -9,14 +9,12 @@ $pageSubtitle = 'Welcome back, ' . explode(' ', authName())[0];
 $activePage   = 'reports';
 $userId       = authId();
 
-// Sidebar badges (unread messages)
+// unread messages for sidebar badge
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND is_read = 0");
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
-//
-// 1) Active placement (IMPORTANT: your DB does NOT have p.created_at -> so use p.id DESC)
-//
+// get the student's active placement (order by id DESC since created_at may not exist)
 $stmt = $pdo->prepare("
     SELECT p.*, c.name AS company_name, c.city
     FROM placements p
@@ -40,10 +38,7 @@ if ($placement) {
     $finalDue   = (clone $end)->modify('-1 month');
 }
 
-//
-// 2) Fetch student docs for interim/final
-// (IMPORTANT: your documents table has uploaded_at (NOT created_at))
-//
+// look up the student's interim and final report documents
 $interimDoc = null;
 $finalDoc   = null;
 
@@ -65,9 +60,7 @@ if ($placementId) {
     }
 }
 
-//
-// 3) Upload handlers (Interim + Final)
-//
+// handle report uploads submitted from this page
 $success = '';
 $error   = '';
 
@@ -156,15 +149,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-//
-// Helpers
-//
+// helper: build the download URL for a document
 function docDownloadUrl($doc) {
     if (!$doc || empty($doc['file_path'])) return '#';
     return "/inplace/" . rawurlencode($doc['file_path']);
 }
 
-// Map DB status -> badge class + label
+// helper: convert a document status to badge class and label
 function statusBadge($status) {
     $status = strtolower(trim((string)$status));
 
@@ -176,7 +167,7 @@ function statusBadge($status) {
     };
 }
 
-// Student-level “mini stats” (based on THEIR current placement)
+// work out the summary numbers for the status panel
 $studentReviewed = 0;
 $studentPending  = 0;
 $studentOverdue  = 0;
@@ -219,10 +210,10 @@ if ($placement) {
             </div>
         <?php endif; ?>
 
-        <!-- TWO COL: My Reports + Status Panel -->
+        <!-- two columns: report list on left, submission status on right -->
         <div class="two-col">
 
-            <!-- LEFT: My Reports table -->
+            <!-- left: table showing the student's submitted reports -->
             <div class="panel">
                 <div class="panel-header">
                     <h3>My Reports</h3>
@@ -351,7 +342,7 @@ if ($placement) {
                 </div>
             </div>
 
-            <!-- RIGHT: Report Submission Status panel (student version) -->
+            <!-- right: quick summary of report submission status -->
             <div class="panel">
                 <div class="panel-header">
                     <h3>Report Submission Status</h3>
@@ -388,7 +379,7 @@ if ($placement) {
 
         </div><!-- /two-col -->
 
-        <!-- Bottom: Uploads (Interim + Final) -->
+        <!-- upload forms for interim and final reports -->
         <div class="panel" id="uploads">
             <div class="panel-header">
                 <h3>Submit Reports</h3>
@@ -402,7 +393,7 @@ if ($placement) {
                     </div>
                 <?php else: ?>
 
-                    <!-- Interim Upload -->
+                    <!-- interim report upload -->
                     <div style="margin-bottom:1.75rem;">
                         <h4 style="margin-bottom:0.75rem;">Submit Interim Report</h4>
 
@@ -451,7 +442,7 @@ if ($placement) {
 
                     <hr style="border:none;border-top:1px solid var(--border);margin:1.5rem 0;">
 
-                    <!-- Final Upload -->
+                    <!-- final report upload -->
                     <div>
                         <h4 style="margin-bottom:0.75rem;">Submit Final Report</h4>
 

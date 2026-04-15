@@ -9,12 +9,12 @@ $pageSubtitle = 'Welcome back, ' . explode(' ', authName())[0];
 $activePage   = 'messages';
 $userId       = authId();
 
-// Sidebar unread badge
+// unread messages count for the sidebar badge
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND is_read = 0");
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
-// ===== GET ASSIGNED TUTORS (from student's placements) =====
+// get all tutors assigned to this student via their placements
 $stmt = $pdo->prepare("
     SELECT 
         u.id,
@@ -35,9 +35,8 @@ $stmt = $pdo->prepare("
 $stmt->execute([$userId]);
 $assignedTutors = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-/**
- * Auto-detect column names in `messages` table
- */
+// check which column names actually exist in the messages table
+// (the schema uses 'body' and 'created_at' but this makes it flexible)
 function pickExistingColumn(PDO $pdo, string $table, array $candidates): ?string {
     $stmt = $pdo->prepare("
         SELECT COLUMN_NAME
@@ -186,13 +185,13 @@ function initials($name) {
 ?>
 <?php include '../includes/header.php'; ?>
 
-<!-- NEW MESSAGE MODAL - Only Assigned Tutors -->
+<!-- modal: start a new conversation with an assigned tutor -->
 <div id="newMessageModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); 
                                   z-index:9999; align-items:center; justify-content:center;">
   <div style="background:white; border-radius:16px; width:90%; max-width:600px; 
               max-height:80vh; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
     
-    <!-- Modal Header -->
+    <!-- modal header -->
     <div style="padding:1.5rem 2rem; border-bottom:1px solid var(--border); display:flex; 
                 align-items:center; justify-content:space-between;">
       <h3 style="font-family:'Playfair Display',serif; font-size:1.375rem; color:var(--navy);">
@@ -205,7 +204,7 @@ function initials($name) {
       </button>
     </div>
 
-    <!-- Search Box -->
+    <!-- search box to filter tutors -->
     <div style="padding:1rem 2rem; border-bottom:1px solid var(--border);">
       <input type="text" id="tutorSearch" placeholder="🔍 Search tutors..." 
              onkeyup="filterTutors()"
@@ -213,7 +212,7 @@ function initials($name) {
                     border-radius:10px; font-family:inherit; font-size:0.9375rem;">
     </div>
 
-    <!-- Tutor List -->
+    <!-- list of tutors the student can message -->
     <div id="tutorList" style="flex:1; overflow-y:auto; padding:0.5rem;">
       <?php if (empty($assignedTutors)): ?>
         <div style="text-align:center; padding:3rem 2rem; color:var(--muted);">
@@ -230,7 +229,7 @@ function initials($name) {
                style="display:flex; align-items:center; gap:1rem; padding:1rem 1.5rem; 
                       cursor:pointer; border-radius:12px; transition:all 0.2s; margin:0.25rem 0;">
             
-            <!-- Avatar -->
+            <!-- avatar with initials -->
             <div style="width:44px; height:44px; border-radius:12px; 
                         background:#8b5cf6; color:white; 
                         display:flex; align-items:center; justify-content:center; 
@@ -238,7 +237,7 @@ function initials($name) {
               <?= htmlspecialchars(initials($t['full_name'])) ?>
             </div>
 
-            <!-- Info -->
+            <!-- tutor name, email and placement info -->
             <div style="flex:1; min-width:0;">
               <div style="font-weight:600; color:var(--navy); font-size:0.9375rem;">
                 <?= htmlspecialchars($t['full_name']) ?>
@@ -261,7 +260,7 @@ function initials($name) {
               <?php endif; ?>
             </div>
 
-            <!-- Tutor Badge -->
+            <!-- role badge -->
             <span style="padding:0.25rem 0.75rem; border-radius:50px; font-size:0.75rem; 
                          font-weight:600; background:#8b5cf620; color:#8b5cf6; white-space:nowrap;">
               👨‍🏫 Tutor
@@ -288,7 +287,7 @@ function initials($name) {
 
         <div class="two-col" style="grid-template-columns: 420px 1fr;">
 
-            <!-- LEFT -->
+            <!-- left side: conversation list -->
             <div class="panel">
                 <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
                     <h3>Conversations</h3>
@@ -360,7 +359,7 @@ function initials($name) {
                 </div>
             </div>
 
-            <!-- RIGHT -->
+            <!-- right side: chat thread -->
             <div class="panel" style="display:flex;flex-direction:column;min-height:620px;">
                 <div class="panel-header" style="display:flex;align-items:center;gap:0.9rem;">
                     <?php if ($chatUser): ?>
@@ -437,7 +436,6 @@ function initials($name) {
 </div>
 
 <script>
-// Modal Functions
 function openNewMessageModal() {
   document.getElementById('newMessageModal').style.display = 'flex';
   document.getElementById('tutorSearch').value = '';
@@ -465,7 +463,7 @@ function startConversation(tutorId) {
   window.location.href = `/inplace/student/messages.php?with=${tutorId}`;
 }
 
-// Hover effect for tutor items
+// hover effect for tutor list items
 document.addEventListener('DOMContentLoaded', () => {
   const items = document.querySelectorAll('.tutor-item');
   items.forEach(item => {
@@ -478,7 +476,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// Close modal when clicking outside
+// close modal if clicking outside the dialog box
 document.getElementById('newMessageModal').addEventListener('click', (e) => {
   if (e.target.id === 'newMessageModal') {
     closeNewMessageModal();

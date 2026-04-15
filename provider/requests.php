@@ -39,9 +39,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ");
         $stmt->execute([$userId, $placementId, $provider['company_id']]);
 
-        // Email tutor
+        // get student, tutor and company details to send notification emails
         $stmt = $pdo->prepare("
-            SELECT p.tutor_id, u.full_name AS student_name, c.name AS company_name, p.role_title,
+            SELECT p.tutor_id,
+                   u.full_name AS student_name, u.email AS student_email,
+                   c.name AS company_name, p.role_title,
                    t.email AS tutor_email, t.full_name AS tutor_name
             FROM placements p
             JOIN users u ON p.student_id = u.id
@@ -53,11 +55,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $placementInfo = $stmt->fetch();
 
         if ($placementInfo) {
-            $scheme   = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-            $host     = $_SERVER['HTTP_HOST'] ?? 'localhost';
-            $tutorUrl = $scheme . '://' . $host . '/inplace/tutor/requests.php';
+            $scheme      = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host        = $_SERVER['HTTP_HOST'] ?? 'localhost';
+            $tutorUrl    = $scheme . '://' . $host . '/inplace/tutor/requests.php';
+            $studentUrl  = $scheme . '://' . $host . '/inplace/student/dashboard.php';
 
-            // If no tutor assigned, email all active tutors
+            loadAppConfig($pdo);
+            $mailCfg = require __DIR__ . '/../config/email_config.php';
+
+            // email the tutor (or all tutors if none assigned)
             if ($placementInfo['tutor_email']) {
                 $tutors = [['email' => $placementInfo['tutor_email'], 'full_name' => $placementInfo['tutor_name']]];
             } else {
@@ -65,59 +71,101 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $tutors = $tStmt->fetchAll();
             }
 
-            if (!empty($tutors)) {
-                loadAppConfig($pdo);
-                $mailCfg = require __DIR__ . '/../config/email_config.php';
+            foreach ($tutors as $tutor) {
+                $htmlBody = "
+                <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+                  <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
+                    <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
+                    <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Placement Awaiting Your Approval</p>
+                  </div>
+                  <div style='padding:2rem;'>
+                    <p style='color:#374151;font-size:1rem;margin-bottom:1rem;'>Dear " . htmlspecialchars($tutor['full_name']) . ",</p>
+                    <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
+                      A placement request has been approved by the provider and now requires <strong>your approval</strong>.
+                    </p>
+                    <table style='width:100%;border-collapse:collapse;margin-bottom:1.5rem;'>
+                      <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;width:40%;border-bottom:1px solid #e2e8f0;'>Student</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($placementInfo['student_name']) . "</td></tr>
+                      <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Company</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($placementInfo['company_name']) . "</td></tr>
+                      <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>Role</td><td style='padding:0.75rem 1rem;color:#374151;'>" . htmlspecialchars($placementInfo['role_title']) . "</td></tr>
+                    </table>
+                    <div style='text-align:center;margin:2rem 0;'>
+                      <a href='$tutorUrl' style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;'>Review &amp; Approve Placement</a>
+                    </div>
+                    <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
+                  </div>
+                </div>";
 
-                foreach ($tutors as $tutor) {
-                    $htmlBody = "
-                    <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
-                      <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
-                        <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
-                        <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Placement Awaiting Your Approval</p>
-                      </div>
-                      <div style='padding:2rem;'>
-                        <p style='color:#374151;font-size:1rem;margin-bottom:1rem;'>Dear " . htmlspecialchars($tutor['full_name']) . ",</p>
-                        <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
-                          A placement request has been approved by the provider and now requires <strong>your approval</strong>.
-                        </p>
-                        <table style='width:100%;border-collapse:collapse;margin-bottom:1.5rem;'>
-                          <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;width:40%;border-bottom:1px solid #e2e8f0;'>Student</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($placementInfo['student_name']) . "</td></tr>
-                          <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Company</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($placementInfo['company_name']) . "</td></tr>
-                          <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>Role</td><td style='padding:0.75rem 1rem;color:#374151;'>" . htmlspecialchars($placementInfo['role_title']) . "</td></tr>
-                        </table>
-                        <div style='text-align:center;margin:2rem 0;'>
-                          <a href='$tutorUrl' style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;border:2px solid #0c1b33;'>Review &amp; Approve Placement</a>
-                        </div>
-                        <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
-                      </div>
-                    </div>";
+                $mail = new PHPMailer(true);
+                try {
+                    $mail->isSMTP();
+                    $mail->Host       = $mailCfg['smtp_host'];
+                    $mail->SMTPAuth   = true;
+                    $mail->Username   = $mailCfg['smtp_user'];
+                    $mail->Password   = $mailCfg['smtp_pass'];
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                    $mail->Port       = $mailCfg['smtp_port'];
+                    $mail->CharSet    = 'UTF-8';
+                    $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                    $mail->addAddress($tutor['email'], $tutor['full_name']);
+                    $mail->isHTML(true);
+                    $mail->Subject = 'InPlace - Placement Awaiting Your Approval: ' . $placementInfo['student_name'];
+                    $mail->Body    = $htmlBody;
+                    $mail->AltBody = "Placement from {$placementInfo['student_name']} at {$placementInfo['company_name']} needs your approval. Review at: $tutorUrl";
+                    $mail->send();
+                } catch (MailException $ex) {
+                    error_log('Tutor notification email failed: ' . $mail->ErrorInfo);
+                }
+            }
 
-                    $mail = new PHPMailer(true);
-                    try {
-                        $mail->isSMTP();
-                        $mail->Host       = $mailCfg['smtp_host'];
-                        $mail->SMTPAuth   = true;
-                        $mail->Username   = $mailCfg['smtp_user'];
-                        $mail->Password   = $mailCfg['smtp_pass'];
-                        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-                        $mail->Port       = $mailCfg['smtp_port'];
-                        $mail->CharSet    = 'UTF-8';
-                        $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
-                        $mail->addAddress($tutor['email'], $tutor['full_name']);
-                        $mail->isHTML(true);
-                        $mail->Subject = 'InPlace - Placement Awaiting Your Approval: ' . $placementInfo['student_name'];
-                        $mail->Body    = $htmlBody;
-                        $mail->AltBody = "Placement from {$placementInfo['student_name']} at {$placementInfo['company_name']} needs your approval. Review at: $tutorUrl";
-                        $mail->send();
-                    } catch (MailException $ex) {
-                        error_log('Tutor notification email failed: ' . $mail->ErrorInfo);
-                    }
+            // email the student to let them know the provider has confirmed
+            if ($placementInfo['student_email']) {
+                $studentHtml = "
+                <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+                  <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
+                    <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
+                    <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Placement Update</p>
+                  </div>
+                  <div style='padding:2rem;'>
+                    <p style='color:#374151;font-size:1rem;margin-bottom:1rem;'>Dear " . htmlspecialchars($placementInfo['student_name']) . ",</p>
+                    <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
+                      Good news! <strong>" . htmlspecialchars($placementInfo['company_name']) . "</strong> has confirmed your placement details.
+                      Your request has now been passed to your <strong>Placement Tutor</strong> for final approval.
+                    </p>
+                    <table style='width:100%;border-collapse:collapse;margin-bottom:1.5rem;'>
+                      <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;width:40%;border-bottom:1px solid #e2e8f0;'>Company</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($placementInfo['company_name']) . "</td></tr>
+                      <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>Role</td><td style='padding:0.75rem 1rem;color:#374151;'>" . htmlspecialchars($placementInfo['role_title']) . "</td></tr>
+                    </table>
+                    <div style='text-align:center;margin:2rem 0;'>
+                      <a href='$studentUrl' style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;'>View My Dashboard</a>
+                    </div>
+                    <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
+                  </div>
+                </div>";
+
+                $mail2 = new PHPMailer(true);
+                try {
+                    $mail2->isSMTP();
+                    $mail2->Host       = $mailCfg['smtp_host'];
+                    $mail2->SMTPAuth   = true;
+                    $mail2->Username   = $mailCfg['smtp_user'];
+                    $mail2->Password   = $mailCfg['smtp_pass'];
+                    $mail2->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                    $mail2->Port       = $mailCfg['smtp_port'];
+                    $mail2->CharSet    = 'UTF-8';
+                    $mail2->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                    $mail2->addAddress($placementInfo['student_email'], $placementInfo['student_name']);
+                    $mail2->isHTML(true);
+                    $mail2->Subject = 'InPlace - Provider Confirmed Your Placement at ' . $placementInfo['company_name'];
+                    $mail2->Body    = $studentHtml;
+                    $mail2->AltBody = "Good news! {$placementInfo['company_name']} has confirmed your placement. It is now with your tutor for final approval.";
+                    $mail2->send();
+                } catch (MailException $ex) {
+                    error_log('Student provider-approval email failed: ' . $mail2->ErrorInfo);
                 }
             }
         }
 
-        $actionMsg = "Placement approved! The assigned tutor has been notified.";
+        $actionMsg = "Placement approved! The tutor and student have been notified.";
         $actionType = 'success';
         
     } elseif ($action === 'provide_feedback') {

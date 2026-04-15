@@ -2,22 +2,21 @@
 require_once '../includes/auth.php';
 require_once '../config/db.php';
 
-requireAuth('student');   // ← correct function name (NOT require_role)
+requireAuth('student');
 
 $pageTitle    = 'My Placement';
 $pageSubtitle = 'Welcome back, ' . explode(' ', authName())[0];
 $activePage   = 'placement';
 $userId       = authId();
 
-// Badge variables sidebar needs
 $pendingRequests = 0;
 
-// Unread messages (for sidebar badge)
+// unread messages count for the sidebar badge
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND is_read = 0");
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
-// ── Active placement with company + tutor info ───────────────────
+// get the student's active placement along with company and tutor info
 $stmt = $pdo->prepare("
     SELECT
         p.*,
@@ -37,7 +36,7 @@ $stmt = $pdo->prepare("
 $stmt->execute([$userId]);
 $placement = $stmt->fetch();
 
-// ── Progress % ───────────────────────────────────────────────────
+// calculate placement progress percentage
 $progressPct   = 0;
 $monthsElapsed = 0;
 $monthsTotal   = 0;
@@ -52,10 +51,9 @@ if ($placement) {
     $monthsTotal   = round($totalDays / 30, 1);
 }
 
-// ── Change requests for this placement ──────────────────────────
+// load any change requests the student has submitted for this placement
 $changeRequests = [];
 if ($placement) {
-    // Ensure table exists before querying
     try {
         $stmt = $pdo->prepare("
             SELECT * FROM placement_change_requests
@@ -64,10 +62,10 @@ if ($placement) {
         ");
         $stmt->execute([$placement['id'], $userId]);
         $changeRequests = $stmt->fetchAll();
-    } catch (Exception $e) { /* table may not exist yet */ }
+    } catch (Exception $e) {}
 }
 
-// ── Documents uploaded by this student ──────────────────────────
+// documents the student has uploaded for this placement
 $documents = [];
 if ($placement) {
     $stmt = $pdo->prepare("
@@ -79,7 +77,7 @@ if ($placement) {
     $documents = $stmt->fetchAll();
 }
 
-// ── Weekly reflections ───────────────────────────────────────────
+// load the student's recent weekly reflections
 $reflections = [];
 if ($placement) {
     $stmt = $pdo->prepare("
@@ -121,9 +119,7 @@ unset($_SESSION['change_success'], $_SESSION['change_error']);
 
         <?php if ($placement): ?>
 
-        <!-- ═══════════════════════════════════════════════════════
-             CURRENT PLACEMENT CARD
-        ════════════════════════════════════════════════════════ -->
+        <!-- main placement details card -->
         <div class="panel" style="margin-bottom:1.5rem;">
             <div class="panel-header">
                 <div>
@@ -217,12 +213,10 @@ unset($_SESSION['change_success'], $_SESSION['change_error']);
         </div><!-- /placement panel -->
 
 
-        <!-- ═══════════════════════════════════════════════════════
-             TWO COLUMN: Documents + Reflections
-        ════════════════════════════════════════════════════════ -->
+        <!-- documents and reflections side by side -->
         <div class="two-col">
 
-            <!-- ── Documents ───────────────────────────────────── -->
+            <!-- documents uploaded for this placement -->
             <div class="panel">
                 <div class="panel-header">
                     <h3>Documents</h3>
@@ -270,7 +264,7 @@ unset($_SESSION['change_success'], $_SESSION['change_error']);
             </div><!-- /documents panel -->
 
 
-            <!-- ── Weekly Reflection Log ───────────────────────── -->
+            <!-- weekly reflection log -->
             <div class="panel">
                 <div class="panel-header">
                     <h3>Weekly Reflection Log</h3>
@@ -306,9 +300,7 @@ unset($_SESSION['change_success'], $_SESSION['change_error']);
         </div><!-- /two-col -->
 
 
-        <!-- ═══════════════════════════════════════════════════════
-             CHANGE REQUESTS HISTORY
-        ════════════════════════════════════════════════════════ -->
+        <!-- history of placement change requests -->
         <div class="panel" style="margin-top:1.5rem;">
             <div class="panel-header">
                 <div>
@@ -392,9 +384,7 @@ unset($_SESSION['change_success'], $_SESSION['change_error']);
         </div>
 
         <?php else: ?>
-        <!-- ═══════════════════════════════════════════════════════
-             NO PLACEMENT YET
-        ════════════════════════════════════════════════════════ -->
+        <!-- shown when the student doesn't have an approved placement yet -->
         <div class="panel">
             <div class="panel-body" style="text-align:center;padding:4rem 2rem;">
                 <div style="font-size:4rem;margin-bottom:1rem;">🏢</div>
@@ -417,9 +407,7 @@ unset($_SESSION['change_success'], $_SESSION['change_error']);
 </div><!-- /main -->
 
 
-<!-- ═══════════════════════════════════════════════════════════════
-     MODAL: Add Reflection
-════════════════════════════════════════════════════════════════ -->
+<!-- modal: add a weekly reflection entry -->
 <div id="reflectionModal" style="display:none;position:fixed;inset:0;
      background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
     <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;
@@ -456,9 +444,7 @@ unset($_SESSION['change_success'], $_SESSION['change_error']);
 </div>
 
 
-<!-- ═══════════════════════════════════════════════════════════════
-     MODAL: Upload Document
-════════════════════════════════════════════════════════════════ -->
+<!-- modal: upload a document for this placement -->
 <div id="uploadModal" style="display:none;position:fixed;inset:0;
      background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
     <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;
@@ -507,9 +493,7 @@ unset($_SESSION['change_success'], $_SESSION['change_error']);
 </div>
 
 
-<!-- ═══════════════════════════════════════════════════════════════
-     MODAL: Request Change
-════════════════════════════════════════════════════════════════ -->
+<!-- modal: submit a placement change request -->
 <div id="changeModal" style="display:none;position:fixed;inset:0;
      background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
     <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;

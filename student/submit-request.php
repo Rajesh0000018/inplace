@@ -18,17 +18,14 @@ $pageSubtitle = 'New Placement Authorisation Request';
 $activePage   = 'request';
 $userId       = authId();
 
-// Sidebar badge variables
 $pendingRequests = 0;
 
-// Unread messages for sidebar badge
+// unread messages for the sidebar badge
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND is_read = 0");
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
-// ----------------------
-// Helper: UK postcode -> lat/lng (postcodes.io)
-// ----------------------
+// helper to geocode a UK postcode to lat/lng using postcodes.io
 function normaliseUkPostcode(string $pc): string {
     $pc = strtoupper(trim($pc));
     $pc = preg_replace('/\s+/', '', $pc);
@@ -53,7 +50,7 @@ function httpGetJson(string $url): ?array {
         return is_array($json) ? $json : null;
     }
 
-    // Fallback to cURL (works even if allow_url_fopen disabled)
+    // fallback to cURL if file_get_contents is disabled
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -90,7 +87,7 @@ function geocodeUkPostcode(?string $postcode): array {
     return [$lat, $lng, $pc];
 }
 
-// ── Handle form submission ────────────────────────────────────────
+// handle the form submission (both draft save and final submit)
 $success = '';
 $error   = '';
 
@@ -106,7 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $supEmail       = trim($_POST['supervisor_email'] ?? '');
     $supPhone       = trim($_POST['supervisor_phone'] ?? '');
 
-    // ── Supervisor email validation (submit only) ─────────────────
+    // check the supervisor email contains the company name (only on final submit)
     if (!$isDraft && $supEmail && $companyName) {
         $companyWords = preg_split('/[\s\-&.,\/\(\)]+/', strtolower($companyName));
         $emailLower   = strtolower($supEmail);
@@ -126,7 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $pdo->beginTransaction();
 
-            // Use lat/lng from Nominatim autocomplete if provided, else fall back to postcode geocoding
+            // use coordinates from autocomplete if available, otherwise geocode the postcode
             $postLat = isset($_POST['company_lat']) && is_numeric($_POST['company_lat']) ? (float)$_POST['company_lat'] : null;
             $postLng = isset($_POST['company_lng']) && is_numeric($_POST['company_lng']) ? (float)$_POST['company_lng'] : null;
 
@@ -138,9 +135,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 [$lat, $lng, $pcNormalised] = geocodeUkPostcode($companyPostcode);
             }
 
-            // Insert or find company
-            $stmt = $pdo->prepare("SELECT id, latitude, longitude FROM companies WHERE name = ? AND COALESCE(postcode,'') = ? LIMIT 1");
-            $stmt->execute([$companyName, $pcNormalised ?? '']);
+            // look up the company by name only (case-insensitive) so it matches
+            // the same record the provider registered with, regardless of postcode
+            $stmt = $pdo->prepare("SELECT id, latitude, longitude FROM companies WHERE LOWER(name) = LOWER(?) LIMIT 1");
+            $stmt->execute([$companyName]);
             $existingCompany = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($existingCompany) {
@@ -153,10 +151,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $companyId = (int)$pdo->lastInsertId();
             }
 
-            // Determine status
+            // set status to draft or awaiting_provider depending on which button was clicked
             $placementStatus = $isDraft ? 'draft' : 'awaiting_provider';
 
-            // Insert placement
+            // insert the placement record
             $stmt = $pdo->prepare("INSERT INTO placements (student_id,company_id,role_title,job_description,start_date,end_date,salary,working_pattern,supervisor_name,supervisor_email,supervisor_phone,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
             $stmt->execute([
                 $userId, $companyId,
@@ -171,7 +169,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
             $placementId = (int)$pdo->lastInsertId();
 
-            // Handle file uploads
+            // handle any documents attached to the request (e.g. offer letter)
             if (!empty($_FILES['documents']['name'][0])) {
                 foreach ($_FILES['documents']['tmp_name'] as $i => $tmp) {
                     if (!$tmp) continue;
@@ -185,15 +183,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            // Audit log
+            // log this action to the audit trail
             $stmt = $pdo->prepare("INSERT INTO audit_log (user_id,action,table_affected,record_id,ip_address) VALUES (?,?,'placements',?,?)");
             $stmt->execute([$userId, $isDraft ? 'saved_draft' : 'submitted_placement_request', $placementId, $_SERVER['REMOTE_ADDR'] ?? '']);
 
             $pdo->commit();
 
-            // ── Send email to provider (submit only) ─────────────────
+            // send a notification email to the provider when submitting (not for drafts)
             if (!$isDraft) {
-                // Get student name
+                // get the student's name to put in the email
                 $stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = ?");
                 $stmt->execute([$userId]);
                 $studentName = $stmt->fetchColumn();
@@ -203,7 +201,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $providerRequestsUrl = $scheme . '://' . $host . '/inplace/provider/requests.php';
                 $providerRegisterUrl = $scheme . '://' . $host . '/inplace/provider-register.php';
 
-                // Find provider user linked to this company
+                // check if the company already has a provider account on the system
                 $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE role='provider' AND company_id=? AND is_active=1 LIMIT 1");
                 $stmt->execute([$companyId]);
                 $providerUser = $stmt->fetch();
@@ -211,7 +209,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $toEmail = $providerUser ? $providerUser['email'] : $supEmail;
                 $toName  = $providerUser ? $providerUser['full_name'] : $supName;
 
-                // Generate a single-use confirm token for quick approve/reject without login
+                // generate a one-time token so the provider can approve/reject without logging in
                 $confirmUrl   = generateProviderToken($pdo, $placementId, $toEmail);
                 $actionUrl    = $providerUser ? $providerRequestsUrl : $providerRegisterUrl . '?company=' . urlencode($companyName) . '&email=' . urlencode($supEmail);
                 $actionLabel  = $providerUser ? 'Review in InPlace' : 'Register & Review Request';
@@ -283,7 +281,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// ── Load draft for editing if ?edit=id is passed ────────────────
+// if ?edit=id is in the URL, load that draft so the form is pre-filled
 $draftData = null;
 $editId    = (int)($_GET['edit'] ?? 0);
 if ($editId > 0) {
@@ -301,7 +299,7 @@ if ($editId > 0) {
     $draftData = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
-// ── Handle UPDATE of existing draft ─────────────────────────────
+// handle updating an existing draft when the form is re-submitted with an edit_placement_id
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])) {
     $editPlacementId = (int)$_POST['edit_placement_id'];
     $isDraft = isset($_POST['action']) && $_POST['action'] === 'draft';
@@ -319,7 +317,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
         $postLat = isset($_POST['company_lat']) && is_numeric($_POST['company_lat']) ? (float)$_POST['company_lat'] : null;
         $postLng = isset($_POST['company_lng']) && is_numeric($_POST['company_lng']) ? (float)$_POST['company_lng'] : null;
 
-        // Fetch current company_id for this draft
+        // get the company linked to this draft
         $stmt = $pdo->prepare("SELECT company_id FROM placements WHERE id = ? AND student_id = ? AND status = 'draft'");
         $stmt->execute([$editPlacementId, $userId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -327,7 +325,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
         if (!$row) throw new Exception("Draft not found.");
         $companyId = (int)$row['company_id'];
 
-        // Update company
+        // update company details
         $pdo->prepare("
             UPDATE companies SET name=?, address=?, sector=?,
                 contact_name=?, contact_email=?, contact_phone=?,
@@ -335,7 +333,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
             WHERE id=?
         ")->execute([$companyName, $companyAddress, $sector, $supName, $supEmail, $supPhone, $postLat, $postLng, $companyId]);
 
-        // Update placement
+        // update placement details and set the new status
         $newStatus = $isDraft ? 'draft' : 'awaiting_provider';
         $pdo->prepare("
             UPDATE placements SET
@@ -355,7 +353,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
             $editPlacementId, $userId
         ]);
 
-        // Handle new file uploads
+        // save any new documents uploaded with this edit
         if (!empty($_FILES['documents']['name'][0])) {
             foreach ($_FILES['documents']['tmp_name'] as $i => $tmp) {
                 if (!$tmp) continue;
@@ -372,7 +370,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
         $pdo->commit();
 
         if (!$isDraft) {
-            // Send provider email — reuse same logic as new submission
+            // email the provider when the student submits from draft
             $stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = ?");
             $stmt->execute([$userId]);
             $studentName = $stmt->fetchColumn();
@@ -424,7 +422,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
     }
 }
 
-// ── Check if student already has an active/pending placement ────
+// check if the student already has a placement in progress
 $stmt = $pdo->prepare("
     SELECT id, status FROM placements
     WHERE student_id = ?
@@ -769,7 +767,7 @@ document.querySelector('form').addEventListener('submit', function(e) {
     }
 });
 
-// ── Nominatim address autocomplete ─────────────────────────────────
+// address autocomplete using the Nominatim (OpenStreetMap) API
 (function () {
     const addrInput   = document.getElementById('addressSearch');
     const addrDrop    = document.getElementById('addressSuggestions');

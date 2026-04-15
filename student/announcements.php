@@ -9,13 +9,13 @@ $pageSubtitle = 'Messages from your placement team';
 $activePage   = 'announcements';
 $userId       = authId();
 
-// Sidebar badges
+// unread messages count for the sidebar
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND is_read = 0");
 $stmt->execute([$userId]);
 $unreadCount     = (int)$stmt->fetchColumn();
 $pendingRequests = 0;
 
-// Ensure tables exist (created by tutor page, but guard here too)
+// make sure the announcements tables exist (tutor creates them, but just in case)
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS announcements (
@@ -42,12 +42,12 @@ try {
     ");
 } catch (Exception $e) {}
 
-// Fetch student's academic year and programme for audience filtering
+// get the student's year and programme so we can filter announcements for them
 $stmt = $pdo->prepare("SELECT academic_year, programme_type FROM users WHERE id = ?");
 $stmt->execute([$userId]);
 $me = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Fetch announcements relevant to this student
+// fetch announcements that apply to this student
 $stmt = $pdo->prepare("
     SELECT a.*,
            u.full_name AS author_name,
@@ -72,11 +72,11 @@ $totalCount  = count($announcements);
 $unreadAnns  = array_filter($announcements, fn($a) => !$a['read_at']);
 $unreadAnnCount = count($unreadAnns);
 
-// ── Filter ───────────────────────────────────────────────────────
+// check if the user only wants to see unread announcements
 $filterUnread = isset($_GET['filter']) && $_GET['filter'] === 'unread';
 $displayed = $filterUnread ? array_values($unreadAnns) : $announcements;
 
-// ── Mark all visible as read (bulk upsert) ───────────────────────
+// mark all displayed announcements as read for this student
 if (!empty($displayed)) {
     $ids = array_column($displayed, 'id');
     foreach ($ids as $aid) {

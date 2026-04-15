@@ -13,7 +13,7 @@ require_once __DIR__ . '/../../PHPMailer-master/src/SMTP.php';
 requireAuth('student');
 $userId = authId();
 
-// Ensure table exists
+// create the change requests table if it doesn't exist yet
 $pdo->exec("
     CREATE TABLE IF NOT EXISTS placement_change_requests (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -43,7 +43,7 @@ $changeType      = trim($_POST['change_type'] ?? '');
 $justification   = trim($_POST['justification'] ?? '');
 $proposedDetails = trim($_POST['proposed_details'] ?? '');
 
-// Validate the placement belongs to this student and is approved/active
+// make sure this placement belongs to the student and is currently active
 $stmt = $pdo->prepare("
     SELECT p.*, c.name AS company_name, c.id AS company_id
     FROM placements p
@@ -59,7 +59,7 @@ if (!$placement || !$changeType || !$justification) {
     exit;
 }
 
-// Block if there's already a pending change request for this placement
+// only allow one pending change request at a time
 $stmt = $pdo->prepare("
     SELECT COUNT(*) FROM placement_change_requests
     WHERE placement_id = ? AND status IN ('pending_provider','pending_tutor')
@@ -71,7 +71,7 @@ if ((int)$stmt->fetchColumn() > 0) {
     exit;
 }
 
-// Insert change request
+// save the change request to the database
 $stmt = $pdo->prepare("
     INSERT INTO placement_change_requests
         (placement_id, student_id, change_type, justification, proposed_details, status)
@@ -79,7 +79,7 @@ $stmt = $pdo->prepare("
 ");
 $stmt->execute([$placementId, $userId, $changeType, $justification, $proposedDetails]);
 
-// ── Email the provider ───────────────────────────────────────────────
+// email the provider to notify them about the change request
 $stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = ?");
 $stmt->execute([$userId]);
 $studentName = $stmt->fetchColumn();
@@ -87,12 +87,12 @@ $studentName = $stmt->fetchColumn();
 $scheme   = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 $host     = $_SERVER['HTTP_HOST'] ?? 'localhost';
 
-// Find provider user linked to the company
+// find the provider account linked to the company
 $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE role='provider' AND company_id=? AND is_active=1 LIMIT 1");
 $stmt->execute([$placement['company_id']]);
 $providerUser = $stmt->fetch();
 
-// Fall back to supervisor email if no provider account
+// if there's no provider account, fall back to the supervisor email from the placement form
 $toEmail  = $providerUser ? $providerUser['email'] : ($placement['supervisor_email'] ?? '');
 $toName   = $providerUser ? $providerUser['full_name'] : ($placement['supervisor_name'] ?? 'Provider');
 

@@ -15,7 +15,7 @@ if (!in_array($docType, $allowedTypes, true)) {
 
 $back = '/inplace/student/my-placement.php';
 
-// Validate placement belongs to this student
+// check the placement belongs to this student
 if ($placementId <= 0) {
     header("Location: $back?error=invalid");
     exit;
@@ -28,7 +28,7 @@ if (!$stmt->fetch()) {
     exit;
 }
 
-// Validate file
+// validate the uploaded file
 if (empty($_FILES['document']['name']) || $_FILES['document']['error'] !== UPLOAD_ERR_OK) {
     header("Location: $back?error=upload_failed");
     exit;
@@ -46,7 +46,7 @@ if ($_FILES['document']['size'] > 10 * 1024 * 1024) {
     exit;
 }
 
-// Save file
+// save the file to the uploads folder
 $uploadDir = __DIR__ . '/../../assets/uploads/';
 if (!is_dir($uploadDir)) mkdir($uploadDir, 0775, true);
 
@@ -62,7 +62,7 @@ if (!move_uploaded_file($_FILES['document']['tmp_name'], $destAbs)) {
 
 $fileSize = round($_FILES['document']['size'] / 1024) . ' KB';
 
-// Determine status — reports need tutor review; other docs are auto-approved
+// reports need the tutor to review them; other documents like offer letters are auto-approved
 $status = in_array($docType, ['interim_report', 'final_report']) ? 'pending_review' : 'approved';
 
 $pdo->prepare("

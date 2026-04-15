@@ -15,7 +15,7 @@ $stmt->execute([$userId]);
 $unreadCount     = (int)$stmt->fetchColumn();
 $pendingRequests = 0;
 
-// ── Handle confirm / reschedule actions ─────────────────────────
+// handle POST actions: confirm, reschedule, or decline a visit
 $actionMsg  = '';
 $actionType = '';
 
@@ -71,11 +71,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// ── Fetch filters ────────────────────────────────────────────────
 $filterType = $_GET['type']   ?? '';
 $filterDate = $_GET['date']   ?? '';
 
-// ── Fetch all visits for this student ───────────────────────────
+// get all visits for this student, applying any active filters
 $where  = ["p.student_id = ?"];
 $params = [$userId];
 
@@ -134,7 +133,7 @@ foreach ($visits as $v) {
         </div>
         <?php endif; ?>
 
-        <!-- ── Filter Bar ────────────────────────────────────── -->
+        <!-- filter bar for visit type and date -->
         <form method="GET" style="display:flex;gap:0.875rem;align-items:center;
                                    margin-bottom:2rem;flex-wrap:wrap;">
             <select name="type"
@@ -162,9 +161,7 @@ foreach ($visits as $v) {
         </form>
 
 
-        <!-- ═══════════════════════════════════════════════════════
-             UPCOMING VISITS
-        ════════════════════════════════════════════════════════ -->
+        <!-- upcoming and past visits -->
         <?php if (empty($upcoming) && empty($past)): ?>
 
             <!-- No visits at all -->
@@ -302,9 +299,7 @@ foreach ($visits as $v) {
         <?php endif; ?>
 
 
-        <!-- ═══════════════════════════════════════════════════════
-             PAST VISITS
-        ════════════════════════════════════════════════════════ -->
+        <!-- past visits section -->
         <?php if (!empty($past)): ?>
         <div>
             <h3 style="font-family:'Playfair Display',serif;font-size:1.25rem;
@@ -362,9 +357,7 @@ foreach ($visits as $v) {
 </div><!-- /main -->
 
 
-<!-- ══════════════════════════════════════════════════════════════
-     MODAL: Reschedule Request
-══════════════════════════════════════════════════════════════ -->
+<!-- modal: request to reschedule a visit -->
 <div id="rescheduleModal" style="display:none;position:fixed;inset:0;
      background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
     <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;
@@ -411,9 +404,7 @@ foreach ($visits as $v) {
 </div>
 
 
-<!-- ══════════════════════════════════════════════════════════════
-     MODAL: Add Notes (student side)
-══════════════════════════════════════════════════════════════ -->
+<!-- modal: add preparation notes for a confirmed visit -->
 <div id="notesModal" style="display:none;position:fixed;inset:0;
      background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
     <div style="background:var(--white);border-radius:var(--radius);padding:2.5rem;

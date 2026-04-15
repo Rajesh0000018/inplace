@@ -1,6 +1,13 @@
 <?php
 require_once '../includes/auth.php';
 require_once '../config/db.php';
+require_once '../config/app_config.php';
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as MailException;
+require_once __DIR__ . '/../PHPMailer-master/src/Exception.php';
+require_once __DIR__ . '/../PHPMailer-master/src/PHPMailer.php';
+require_once __DIR__ . '/../PHPMailer-master/src/SMTP.php';
 
 requireAuth('tutor');
 
@@ -37,8 +44,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         ");
         $stmt->execute([$action, $comments, $userId, $placementId]);
 
-        // Notify the student
-        $stmt = $pdo->prepare("SELECT student_id FROM placements WHERE id = ?");
+        // get student details and company name to notify them
+        $stmt = $pdo->prepare("
+            SELECT p.student_id, u.full_name AS student_name, u.email AS student_email,
+                   c.name AS company_name, p.role_title
+            FROM placements p
+            JOIN users u ON p.student_id = u.id
+            JOIN companies c ON p.company_id = c.id
+            WHERE p.id = ?
+        ");
         $stmt->execute([$placementId]);
         $row = $stmt->fetch();
 
@@ -49,7 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $msg = "Your placement request was not approved." . ($comments ? " Tutor feedback: $comments" : " Please contact your tutor for more information.");
             }
 
-            // Notify student via messages (auto-detect column)
+            // send an in-app message to the student
             try {
                 $tCol = null;
                 $s2 = $pdo->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
@@ -70,23 +84,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 error_log('Tutor notify message failed: ' . $e->getMessage());
             }
 
-            // Notifications table (optional — may not exist)
+            // notifications table entry
             try {
                 $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'placement_decision', ?)");
                 $stmt->execute([$row['student_id'], $msg]);
-            } catch (Exception $e) { /* table may not exist */ }
+            } catch (Exception $e) {}
+
+            // send an email to the student with the tutor's decision
+            if ($row['student_email']) {
+                try {
+                    loadAppConfig($pdo);
+                    $mailCfg = require_once __DIR__ . '/../config/email_config.php';
+
+                    $scheme     = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                    $host       = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                    $studentUrl = $scheme . '://' . $host . '/inplace/student/dashboard.php';
+
+                    if ($action === 'approved') {
+                        $emailSubject = 'InPlace - Your Placement Has Been Approved!';
+                        $headline     = 'Placement Approved';
+                        $emailBody    = "
+                            <p style='color:#374151;font-size:1rem;margin-bottom:1rem;'>Dear " . htmlspecialchars($row['student_name']) . ",</p>
+                            <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
+                                🎉 Great news! Your placement at <strong>" . htmlspecialchars($row['company_name']) . "</strong>
+                                has been <strong style='color:#059669;'>approved</strong> by your Placement Tutor.
+                                You can now log in and view your full placement details.
+                            </p>";
+                    } else {
+                        $emailSubject = 'InPlace - Placement Request Update';
+                        $headline     = 'Placement Request Not Approved';
+                        $emailBody    = "
+                            <p style='color:#374151;font-size:1rem;margin-bottom:1rem;'>Dear " . htmlspecialchars($row['student_name']) . ",</p>
+                            <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
+                                Your placement request at <strong>" . htmlspecialchars($row['company_name']) . "</strong>
+                                has not been approved at this time.
+                            </p>"
+                            . ($comments ? "<p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'><strong>Tutor feedback:</strong> " . nl2br(htmlspecialchars($comments)) . "</p>" : "")
+                            . "<p style='color:#374151;font-size:1rem;'>Please contact your tutor if you have any questions.</p>";
+                    }
+
+                    $htmlBody = "
+                    <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+                      <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
+                        <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
+                        <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>$headline</p>
+                      </div>
+                      <div style='padding:2rem;'>
+                        $emailBody
+                        <div style='text-align:center;margin:2rem 0;'>
+                          <a href='$studentUrl' style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;'>View My Dashboard</a>
+                        </div>
+                        <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
+                      </div>
+                    </div>";
+
+                    $mail = new PHPMailer(true);
+                    $mail->isSMTP();
+                    $mail->Host       = $mailCfg['smtp_host'];
+                    $mail->SMTPAuth   = true;
+                    $mail->Username   = $mailCfg['smtp_user'];
+                    $mail->Password   = $mailCfg['smtp_pass'];
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                    $mail->Port       = $mailCfg['smtp_port'];
+                    $mail->CharSet    = 'UTF-8';
+                    $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                    $mail->addAddress($row['student_email'], $row['student_name']);
+                    $mail->isHTML(true);
+                    $mail->Subject = $emailSubject;
+                    $mail->Body    = $htmlBody;
+                    $mail->AltBody = strip_tags(str_replace(['<br>', '<br/>'], "\n", $emailBody));
+                    $mail->send();
+                } catch (Exception $ex) {
+                    error_log('Tutor decision email to student failed: ' . $ex->getMessage());
+                }
+            }
         }
 
-        // Audit log (optional — may not exist)
+        // audit log
         try {
             $stmt = $pdo->prepare("INSERT INTO audit_log (user_id, action, table_affected, record_id, details) VALUES (?, ?, 'placements', ?, ?)");
             $stmt->execute([$userId, 'placement_' . $action, $placementId, $comments]);
-        } catch (Exception $e) { /* table may not exist */ }
+        } catch (Exception $e) {}
 
         $actionMsg  = $action === 'approved'
-            ? "✅ Placement approved successfully! Student has been notified."
-            : ($action === 'rejected' ? "❌ Placement rejected. Student has been notified." : "ℹ️ Request sent back for more information.");
-        $actionType = $action === 'approved' ? 'success' : ($action === 'rejected' ? 'danger' : 'warning');
+            ? "✅ Placement approved! Student has been notified by email."
+            : "❌ Placement rejected. Student has been notified by email.";
+        $actionType = $action === 'approved' ? 'success' : 'danger';
     }
 }
 

@@ -1,22 +1,21 @@
 <?php
-require_once '../includes/auth.php';   // handles session_start() too
+require_once '../includes/auth.php';
 require_once '../config/db.php';
 
-requireAuth('student');   // redirects away if not logged in as student
+requireAuth('student');
 
-// ── Page variables 
 $pageTitle    = 'Dashboard';
 $pageSubtitle = 'Welcome back, ' . explode(' ', authName())[0];
 $activePage   = 'dashboard';
 
-$userId = authId();   // use this everywhere instead of $_SESSION['user_id']
+$userId = authId();
 
-// ── Unread messages 
+// get unread message count for the sidebar badge
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE receiver_id = ? AND is_read = 0");
 $stmt->execute([$userId]);
 $unreadCount = (int)$stmt->fetchColumn();
 
-// ── Active placement 
+// get the student's active/approved placement
 $stmt = $pdo->prepare("
     SELECT p.*, c.name AS company_name, c.city
     FROM placements p
@@ -27,9 +26,7 @@ $stmt = $pdo->prepare("
 $stmt->execute([$userId]);
 $placement = $stmt->fetch();
 
-// rest of your queries using $userId instead of $_SESSION['user_id']
-
-// Reports submitted count 
+// how many reports has the student submitted
 $stmt = $pdo->prepare("
     SELECT COUNT(*) FROM documents
     WHERE uploaded_by = ? AND doc_type IN ('interim_report','final_report')
@@ -37,7 +34,7 @@ $stmt = $pdo->prepare("
 $stmt->execute([$userId]);
 $reportCount = (int)$stmt->fetchColumn();
 
-//  Next upcoming confirmed visit 
+// get the next upcoming confirmed visit
 $stmt = $pdo->prepare("
     SELECT v.visit_date, v.visit_time, v.type, v.location, v.meeting_link
     FROM visits v
@@ -50,21 +47,24 @@ $stmt = $pdo->prepare("
 $stmt->execute([$userId]);
 $nextVisit = $stmt->fetch();
 
-// ── Latest placement request + its current status 
-$stmt = $pdo->prepare("
-    SELECT p.status, p.created_at, c.name AS company_name
-    FROM placements p
-    JOIN companies c ON p.company_id = c.id
-    WHERE p.student_id = ?
-    ORDER BY p.created_at DESC LIMIT 1
-");
-$stmt->execute([$userId]);
-$latestRequest = $stmt->fetch();
+// for the status tracker: if the student already has an approved/active placement,
+// always show that one — not a newer draft/pending request which would override it
+if ($placement) {
+    $latestRequest = $placement;
+} else {
+    $stmt = $pdo->prepare("
+        SELECT p.status, p.created_at, p.id, c.name AS company_name
+        FROM placements p
+        JOIN companies c ON p.company_id = c.id
+        WHERE p.student_id = ?
+        ORDER BY p.created_at DESC LIMIT 1
+    ");
+    $stmt->execute([$userId]);
+    $latestRequest = $stmt->fetch();
+}
 
-// ── Upcoming deadlines (report due dates — you can store in a
-//    'deadlines' table or derive from placement dates) ─────────────
-//    For now we derive: interim = 4 months after start,
-//                     final   = 1 month before end
+// work out the interim and final report due dates from placement dates
+// interim is 4 months in, final is 1 month before end
 $interimDue = null;
 $finalDue   = null;
 if ($placement) {
@@ -74,7 +74,7 @@ if ($placement) {
     $finalDue   = (clone $end)->modify('-1 month');
 }
 
-// ── Placement progress % ─────────────────────────────────────────
+// calculate how far through the placement the student is
 $progressPct = 0;
 if ($placement) {
     $start   = new DateTime($placement['start_date']);
@@ -85,7 +85,7 @@ if ($placement) {
     $progressPct = $total > 0 ? min(100, round(($elapsed / $total) * 100)) : 0;
 }
 
-// ── Unread announcements preview ─────────────────────────────────
+// get any unread announcements to show in the top banner (max 3)
 $unreadAnnouncements = [];
 try {
     $stmt = $pdo->prepare("SELECT academic_year, programme_type FROM users WHERE id = ?");
@@ -111,8 +111,7 @@ try {
     $unreadAnnouncements = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Exception $e) {}
 
-// ── Status tracker steps ─────────────────────────────────────────
-//    Map DB status to which steps are 'done' vs 'active'
+// map each placement status to a step number for the visual tracker
 $statusMap = [
     'draft'              => 0,
     'submitted'          => 1,
@@ -131,9 +130,7 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
 
     <div class="page-content">
 
-        <!-- ═══════════════════════════════════════════════════════
-             ANNOUNCEMENTS BANNER (unread only)
-        ════════════════════════════════════════════════════════ -->
+        <!-- show a banner if the student has unread announcements -->
         <?php if (!empty($unreadAnnouncements)): ?>
         <div style="background:linear-gradient(135deg,#0c1b33,#1a2d4d);border-radius:var(--radius);
                     padding:1.25rem 1.75rem;margin-bottom:1.5rem;display:flex;
@@ -182,9 +179,7 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
         </div>
         <?php endif; ?>
 
-        <!-- ═══════════════════════════════════════════════════════
-             STATS GRID
-        ════════════════════════════════════════════════════════ -->
+        <!-- stats cards at the top of the page -->
         <div class="stats-grid">
 
             <div class="stat-card">
@@ -236,9 +231,7 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
         </div><!-- /stats-grid -->
 
 
-        <!-- ═══════════════════════════════════════════════════════
-             QUICK ACTIONS
-        ════════════════════════════════════════════════════════ -->
+        <!-- quick action buttons row -->
         <div class="quick-actions">
 
             <div class="quick-action" onclick="window.location='/inplace/student/my-placement.php'">
@@ -272,12 +265,10 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
         </div><!-- /quick-actions -->
 
 
-        <!-- ═══════════════════════════════════════════════════════
-             TWO COLUMN SECTION
-        ════════════════════════════════════════════════════════ -->
+        <!-- two column layout: status tracker on left, deadlines on right -->
         <div class="two-col">
 
-            <!-- ── LEFT: Request Status Tracker ───────────────── -->
+            <!-- left: placement request status tracker -->
             <div class="panel">
                 <div class="panel-header">
                     <h3>Request Status Tracker</h3>
@@ -350,7 +341,7 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
             </div><!-- /panel left -->
 
 
-            <!-- ── RIGHT: Upcoming Deadlines ──────────────────── -->
+            <!-- right: upcoming deadlines panel -->
             <div class="panel">
                 <div class="panel-header">
                     <h3>Upcoming Deadlines</h3>
@@ -443,9 +434,7 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
         </div><!-- /two-col -->
 
 
-        <!-- ═══════════════════════════════════════════════════════
-             PLACEMENT PROGRESS BAR  (only show if active placement)
-        ════════════════════════════════════════════════════════ -->
+        <!-- progress bar showing how far through the placement the student is -->
         <?php if ($placement): ?>
         <div class="panel">
             <div class="panel-header">
@@ -473,7 +462,7 @@ $currentStep = $latestRequest ? ($statusMap[$latestRequest['status']] ?? 0) : 0;
                     $today   = new DateTime();
                     $elapsed = round($start->diff($today)->days / 30, 1);
                     $total   = round($start->diff($end)->days / 30, 1);
-                    echo "{$elapsed} months completed of {$total}month placement - dashboard.php:393";
+                    echo "{$elapsed} months completed of a {$total}-month placement";
                     ?>
                 </p>
             </div>
