@@ -795,7 +795,7 @@ fetch('/inplace/api/send-otp.php', {
   if (data.success) {
     emailMsg.textContent = "✓ " + data.message;
     emailMsg.className = "status ok";
-    document.getElementById('otp-field').classList.add('active');
+    document.getElementById('otp-field').style.display = 'block';
     document.getElementById('email').readOnly = true;
 
     let countdown = 60;
