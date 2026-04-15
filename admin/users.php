@@ -84,12 +84,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("DELETE FROM placement_change_requests WHERE student_id = ?")->execute([$targetUserId]);
                 $pdo->prepare("DELETE pt FROM provider_tokens pt JOIN placements p ON pt.placement_id = p.id WHERE p.student_id = ?")->execute([$targetUserId]);
                 $pdo->prepare("DELETE d FROM documents d JOIN placements p ON d.placement_id = p.id WHERE p.student_id = ?")->execute([$targetUserId]);
-                $pdo->prepare("DELETE vs FROM visit_schedule vs JOIN placements p ON vs.placement_id = p.id WHERE p.student_id = ?")->execute([$targetUserId]);
+                $pdo->prepare("DELETE FROM documents WHERE uploaded_by = ?")->execute([$targetUserId]);
+                $pdo->prepare("DELETE v FROM visits v JOIN placements p ON v.placement_id = p.id WHERE p.student_id = ?")->execute([$targetUserId]);
+                $pdo->prepare("DELETE r FROM reflections r JOIN placements p ON r.placement_id = p.id WHERE p.student_id = ?")->execute([$targetUserId]);
 
                 // delete records that reference the user directly
                 $pdo->prepare("DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?")->execute([$targetUserId, $targetUserId]);
+                $pdo->prepare("DELETE FROM notifications WHERE user_id = ?")->execute([$targetUserId]);
                 $pdo->prepare("DELETE FROM audit_log WHERE user_id = ?")->execute([$targetUserId]);
-                $pdo->prepare("DELETE FROM announcement_reads WHERE user_id = ?")->execute([$targetUserId]);
+                $pdo->prepare("DELETE FROM announcement_reads WHERE student_id = ?")->execute([$targetUserId]);
 
                 // delete placements, then the user
                 $pdo->prepare("DELETE FROM placements WHERE student_id = ?")->execute([$targetUserId]);
