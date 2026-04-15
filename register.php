@@ -100,6 +100,10 @@ $error   = $_SESSION['registration_error']   ?? '';
 $success = $_SESSION['registration_success'] ?? '';
 unset($_SESSION['registration_error'], $_SESSION['registration_success']);
 
+// Restore form data after a failed OTP attempt (keeps fields filled)
+$savedForm = $_SESSION['registration_form'] ?? [];
+unset($_SESSION['registration_form']);
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
     $email          = trim($_POST['email'] ?? '');
     $fullName       = trim($_POST['full_name'] ?? '');
@@ -114,52 +118,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
     $otpTimestamp  = $_SESSION['otp_timestamp'] ?? 0;
     $sessionEmail  = $_SESSION['registration_email'] ?? '';
 
-  // --- OTP + Email verification (REPLACE WHOLE SECTION WITH THIS) ---
-$enteredOtp = trim($_POST['otp'] ?? '');
-$enteredOtp = str_pad($enteredOtp, 6, '0', STR_PAD_LEFT); // keeps leading zeros safe
+    // ── OTP verification with 3-attempt limit ────────────────────
+    $enteredOtp    = str_pad(trim($_POST['otp'] ?? ''), 6, '0', STR_PAD_LEFT);
+    $storedOtpHash = $_SESSION['registration_otp']   ?? '';
+    $otpTimestamp  = $_SESSION['otp_timestamp']       ?? 0;
+    $emailLower    = strtolower(trim($email));
+    $sessionEmail  = strtolower(trim($_SESSION['registration_email'] ?? ''));
+    $otpAttempts   = (int)($_SESSION['otp_attempts'] ?? 0);
 
-$storedOtpHash = $_SESSION['registration_otp'] ?? '';
-$otpTimestamp  = $_SESSION['otp_timestamp'] ?? 0;
+    // Helper: save form data so it survives the redirect
+    $formSnapshot = [
+        'email'            => $email,
+        'full_name'        => $fullName,
+        'academic_year'    => $academicYear,
+        'programme_type'   => $programmeType,
+    ];
 
-$emailLower    = strtolower(trim($email));
-$sessionEmail  = strtolower(trim($_SESSION['registration_email'] ?? ''));
+    // 1) OTP session missing
+    if (!$storedOtpHash || !$otpTimestamp || !$sessionEmail) {
+        $_SESSION['registration_error'] = "OTP session not found. Please request a new code.";
+        $_SESSION['registration_form']  = $formSnapshot;
+        header("Location: register.php");
+        exit;
+    }
 
-// 1) Check OTP session exists
-if (!$storedOtpHash || !$otpTimestamp || !$sessionEmail) {
-    $_SESSION['registration_error'] = "OTP session not found. Please request a new code.";
-    header("Location: register.php");
-    exit;
-}
+    // 2) Expired
+    if (time() - $otpTimestamp > 600) {
+        unset($_SESSION['registration_otp'], $_SESSION['otp_timestamp'],
+              $_SESSION['registration_email'], $_SESSION['otp_attempts']);
+        $_SESSION['registration_error'] = "OTP expired. Please click Send OTP to get a new code.";
+        $_SESSION['registration_form']  = $formSnapshot;
+        header("Location: register.php");
+        exit;
+    }
 
-// 2) Expiry check (10 mins)
-if (time() - $otpTimestamp > 600) {
-    $_SESSION['registration_error'] = "OTP expired. Please request a new one.";
-    header("Location: register.php");
-    exit;
-}
+    // 3) Wrong OTP or email mismatch
+    if (!password_verify($enteredOtp, $storedOtpHash) || $emailLower !== $sessionEmail) {
+        $otpAttempts++;
+        $remaining = 3 - $otpAttempts;
 
-$enteredOtp = str_pad(trim($_POST['otp'] ?? ''), 6, '0', STR_PAD_LEFT);
+        if ($otpAttempts >= 3) {
+            // Lock out — clear OTP session, force new code
+            unset($_SESSION['registration_otp'], $_SESSION['otp_timestamp'],
+                  $_SESSION['registration_email'], $_SESSION['otp_attempts']);
+            $_SESSION['registration_error'] = "Too many incorrect attempts. Please click Send OTP to request a new code.";
+        } else {
+            $_SESSION['otp_attempts']       = $otpAttempts;
+            $_SESSION['registration_error'] = "Incorrect OTP. You have $remaining attempt" . ($remaining === 1 ? '' : 's') . " remaining.";
+            // Keep OTP session alive so they can retry
+        }
 
-$storedOtpHash = $_SESSION['registration_otp'] ?? '';
-$otpTimestamp  = $_SESSION['otp_timestamp'] ?? 0;
+        $_SESSION['registration_form'] = $formSnapshot;
+        $_SESSION['otp_visible']       = true; // signal page to re-show OTP field
+        header("Location: register.php");
+        exit;
+    }
 
-$emailLower    = strtolower(trim($_POST['email'] ?? ''));
-$sessionEmail  = strtolower(trim($_SESSION['registration_email'] ?? ''));
-
-if (!$storedOtpHash || !$otpTimestamp || !$sessionEmail) {
-  $_SESSION['registration_error'] = "OTP session not found. Please request a new code.";
-  header("Location: register.php"); exit;
-}
-
-if (time() - $otpTimestamp > 600) {
-  $_SESSION['registration_error'] = "OTP expired. Please request a new one.";
-  header("Location: register.php"); exit;
-}
-
-if (!password_verify($enteredOtp, $storedOtpHash) || $emailLower !== $sessionEmail) {
-  $_SESSION['registration_error'] = "Invalid OTP or email mismatch.";
-  header("Location: register.php"); exit;
-}
+    // OTP correct — clear attempt counter
+    unset($_SESSION['otp_attempts'], $_SESSION['otp_visible']);
 
     // Validate Leicester email
     if (!preg_match('/@student\.le\.ac\.uk$/i', $email)) {
@@ -599,36 +615,44 @@ body::before {
             <?php endif; ?>
 
             <form method="POST" id="registrationForm">
+                <?php
+                $otpVisible   = !empty($_SESSION['otp_visible']);
+                $savedEmail   = htmlspecialchars($savedForm['email'] ?? '');
+                unset($_SESSION['otp_visible']);
+                ?>
                 <!-- Email with OTP -->
                 <div class="form-group">
                     <label>University Email <span class="required">*</span></label>
                     <div class="otp-group">
-                        <input 
-                            type="email" 
-                            name="email" 
-                            id="email" 
-                            class="form-input" 
+                        <input
+                            type="email"
+                            name="email"
+                            id="email"
+                            class="form-input"
                             placeholder="your.name@student.le.ac.uk"
+                            value="<?= $savedEmail ?>"
+                            <?= $otpVisible ? 'readonly' : '' ?>
                             required
                         >
                         <button type="button" class="btn-send-otp" id="sendOtpBtn" onclick="sendOTP()">
-                            Send OTP
+                            <?= $otpVisible ? 'Resend OTP' : 'Send OTP' ?>
                         </button>
                     </div>
                     <small id="emailMsg" class="status"></small>
                 </div>
 
-                <!-- OTP Field (hidden initially) -->
-                <div class="form-group" id="otp-field">
+                <!-- OTP Field (hidden initially, shown on retry) -->
+                <div class="form-group" id="otp-field" <?= $otpVisible ? '' : 'style="display:none;"' ?>>
                     <label>Enter OTP <span class="required">*</span></label>
-                    <input 
-                        type="text" 
-                        name="otp" 
-                        id="otp" 
-                        class="form-input" 
+                    <input
+                        type="text"
+                        name="otp"
+                        id="otp"
+                        class="form-input"
                         placeholder="Enter 6-digit code"
                         maxlength="6"
                         pattern="[0-9]{6}"
+                        <?= $otpVisible ? 'autofocus' : '' ?>
                     >
                     <small id="otpMsg" class="status"></small>
                 </div>
@@ -636,25 +660,30 @@ body::before {
                 <!-- Full Name -->
                 <div class="form-group">
                     <label>Full Name <span class="required">*</span></label>
-                    <input 
-                        type="text" 
-                        name="full_name" 
-                        class="form-input" 
+                    <input
+                        type="text"
+                        name="full_name"
+                        class="form-input"
                         placeholder="John Smith"
+                        value="<?= htmlspecialchars($savedForm['full_name'] ?? '') ?>"
                         required
                     >
                 </div>
 
                 <!-- Academic Year & Programme Type -->
+                <?php
+                $savedYear = $savedForm['academic_year']  ?? '';
+                $savedProg = $savedForm['programme_type'] ?? '';
+                ?>
                 <div class="form-row">
                     <div class="form-group">
                         <label>Academic Year <span class="required">*</span></label>
                         <select name="academic_year" class="form-select" required>
                             <option value="">Select year</option>
-                            <option value="1st Year">1st Year</option>
-                            <option value="2nd Year">2nd Year</option>
-                            <option value="3rd Year">3rd Year</option>
-                            <option value="4th Year">4th Year (Integrated Masters)</option>
+                            <option value="1st Year"  <?= $savedYear==='1st Year'?'selected':'' ?>>1st Year</option>
+                            <option value="2nd Year"  <?= $savedYear==='2nd Year'?'selected':'' ?>>2nd Year</option>
+                            <option value="3rd Year"  <?= $savedYear==='3rd Year'?'selected':'' ?>>3rd Year</option>
+                            <option value="4th Year"  <?= $savedYear==='4th Year'?'selected':'' ?>>4th Year (Integrated Masters)</option>
                         </select>
                     </div>
 
@@ -662,9 +691,9 @@ body::before {
                         <label>Programme Type <span class="required">*</span></label>
                         <select name="programme_type" class="form-select" required>
                             <option value="">Select programme</option>
-                            <option value="BSc">BSc (Bachelors)</option>
-                            <option value="MEng">MEng (Integrated Masters)</option>
-                            <option value="MSc">MSc (Masters)</option>                         
+                            <option value="BSc"  <?= $savedProg==='BSc'?'selected':''  ?>>BSc (Bachelors)</option>
+                            <option value="MEng" <?= $savedProg==='MEng'?'selected':'' ?>>MEng (Integrated Masters)</option>
+                            <option value="MSc"  <?= $savedProg==='MSc'?'selected':''  ?>>MSc (Masters)</option>
                         </select>
                     </div>
                 </div>
@@ -708,10 +737,14 @@ body::before {
     </div>
 
     <script>
+    // In retry mode the OTP field is already visible — treat as pending (user must re-enter OTP)
+    const retryMode = <?= ($otpVisible ?? false) ? 'true' : 'false' ?>;
     let otpVerified = false;
 
     // Send OTP
     function sendOTP() {
+        // In retry mode, unlock email so user can change it if needed
+        document.getElementById('email').readOnly = false;
         const email = document.getElementById('email').value.trim();
         const sendBtn = document.getElementById('sendOtpBtn');
         const emailMsg = document.getElementById('emailMsg');
