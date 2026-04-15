@@ -191,10 +191,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // send a notification email to the provider when submitting (not for drafts)
             if (!$isDraft) {
-                // get the student's name to put in the email
-                $stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = ?");
+                // get the student's name and email
+                $stmt = $pdo->prepare("SELECT full_name, email FROM users WHERE id = ?");
                 $stmt->execute([$userId]);
-                $studentName = $stmt->fetchColumn();
+                $studentRow  = $stmt->fetch();
+                $studentName = $studentRow['full_name'] ?? '';
+                $studentEmail = $studentRow['email'] ?? '';
 
                 $scheme      = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
                 $host        = $_SERVER['HTTP_HOST'] ?? 'localhost';
@@ -267,6 +269,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $mail->send();
                 } catch (MailException $e) {
                     error_log('Provider notification email failed: ' . $mail->ErrorInfo);
+                }
+
+                // send confirmation email to the student
+                if ($studentEmail) {
+                    $studentDashboardUrl = $scheme . '://' . $host . '/inplace/student/dashboard.php';
+                    $studentHtml = "
+                    <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+                      <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
+                        <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
+                        <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Placement Request Submitted</p>
+                      </div>
+                      <div style='padding:2rem;'>
+                        <p style='color:#374151;font-size:1rem;margin-bottom:1rem;'>Dear " . htmlspecialchars($studentName) . ",</p>
+                        <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
+                          Your placement request has been successfully submitted. The placement provider has been notified and will review your request shortly.
+                        </p>
+                        <table style='width:100%;border-collapse:collapse;margin-bottom:1.5rem;'>
+                          <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;width:40%;border-bottom:1px solid #e2e8f0;'>Company</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($companyName) . "</td></tr>
+                          <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Role</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($_POST['role_title'] ?? '') . "</td></tr>
+                          <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Start Date</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($_POST['start_date'] ?? '') . "</td></tr>
+                          <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>End Date</td><td style='padding:0.75rem 1rem;color:#374151;'>" . htmlspecialchars($_POST['end_date'] ?? '') . "</td></tr>
+                        </table>
+                        <p style='color:#374151;font-size:0.95rem;margin-bottom:1.5rem;'>You will receive another email once the provider has reviewed your request. You can also track the status of your placement in your dashboard.</p>
+                        <div style='text-align:center;margin:2rem 0;'>
+                          <a href='$studentDashboardUrl' style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;'>
+                            View My Dashboard
+                          </a>
+                        </div>
+                        <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
+                      </div>
+                    </div>";
+
+                    $mail2 = new PHPMailer(true);
+                    try {
+                        $mail2->isSMTP();
+                        $mail2->Host       = $mailCfg['smtp_host'];
+                        $mail2->SMTPAuth   = true;
+                        $mail2->Username   = $mailCfg['smtp_user'];
+                        $mail2->Password   = $mailCfg['smtp_pass'];
+                        $mail2->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                        $mail2->Port       = $mailCfg['smtp_port'];
+                        $mail2->CharSet    = 'UTF-8';
+                        $mail2->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                        $mail2->addAddress($studentEmail, $studentName);
+                        $mail2->isHTML(true);
+                        $mail2->Subject = 'InPlace - Your Placement Request at ' . $companyName . ' Has Been Submitted';
+                        $mail2->Body    = $studentHtml;
+                        $mail2->AltBody = "Your placement request at $companyName has been submitted and is awaiting provider approval.";
+                        $mail2->send();
+                    } catch (MailException $e) {
+                        error_log('Student confirmation email failed: ' . $mail2->ErrorInfo);
+                    }
                 }
             }
 
@@ -371,9 +425,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
 
         if (!$isDraft) {
             // email the provider when the student submits from draft
-            $stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = ?");
+            $stmt = $pdo->prepare("SELECT full_name, email FROM users WHERE id = ?");
             $stmt->execute([$userId]);
-            $studentName = $stmt->fetchColumn();
+            $studentRow   = $stmt->fetch();
+            $studentName  = $studentRow['full_name'] ?? '';
+            $studentEmail = $studentRow['email'] ?? '';
 
             $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
             $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
@@ -387,8 +443,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
 
             if ($toEmail) {
                 require_once '../includes/provider_token_helper.php';
-                $confirmUrl = generateProviderToken($pdo, $editPlacementId, $toEmail);
+                $confirmUrl  = generateProviderToken($pdo, $editPlacementId, $toEmail);
+                $actionUrl   = $providerUser ? ($scheme . '://' . $host . '/inplace/provider/requests.php') : ($scheme . '://' . $host . '/inplace/provider-register.php?company=' . urlencode($companyName) . '&email=' . urlencode($supEmail));
+                $actionLabel = $providerUser ? 'Review in InPlace' : 'Register & Review Request';
                 $mailCfg = require __DIR__ . '/../config/email_config.php';
+
+                $providerHtml = "
+                <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+                  <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
+                    <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
+                    <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>New Placement Authorisation Request</p>
+                  </div>
+                  <div style='padding:2rem;'>
+                    <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>Dear " . htmlspecialchars($toName) . ",</p>
+                    <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>A student has submitted a placement request for your company and requires your authorisation.</p>
+                    <table style='width:100%;border-collapse:collapse;margin-bottom:1.5rem;'>
+                      <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;width:40%;border-bottom:1px solid #e2e8f0;'>Student</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($studentName) . "</td></tr>
+                      <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Company</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($companyName) . "</td></tr>
+                      <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Role</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars(trim($_POST['role_title'] ?? '')) . "</td></tr>
+                      <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Start Date</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($_POST['start_date'] ?? '') . "</td></tr>
+                      <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>End Date</td><td style='padding:0.75rem 1rem;color:#374151;'>" . htmlspecialchars($_POST['end_date'] ?? '') . "</td></tr>
+                    </table>
+                    <div style='text-align:center;margin:2rem 0;'>
+                      <a href='$confirmUrl' style='display:inline-block;padding:0.875rem 2rem;background-color:#059669;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;margin-bottom:0.75rem;'>
+                        Approve or Decline (no login needed)
+                      </a><br>
+                      <a href='$actionUrl' style='display:inline-block;padding:0.625rem 1.5rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:600;font-size:0.9rem;margin-top:0.5rem;'>
+                        $actionLabel
+                      </a>
+                    </div>
+                    <p style='color:#6b7a8d;font-size:0.8rem;text-align:center;'>The quick-confirm link expires in 7 days and can only be used once.</p>
+                    <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
+                  </div>
+                </div>";
+
                 $mail = new PHPMailer(true);
                 try {
                     $mail->isSMTP();
@@ -403,11 +491,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['edit_placement_id'])
                     $mail->addAddress($toEmail, $toName);
                     $mail->isHTML(true);
                     $mail->Subject = 'InPlace - Placement Authorisation Required: ' . $studentName . ' at ' . $companyName;
-                    $mail->Body    = "<p>New placement request from $studentName at $companyName. <a href='$confirmUrl'>Approve or Decline</a></p>";
-                    $mail->AltBody = "New placement request from $studentName at $companyName. Review at: $confirmUrl";
+                    $mail->Body    = $providerHtml;
+                    $mail->AltBody = "New placement request from $studentName at $companyName. Approve or Decline: $confirmUrl";
                     $mail->send();
                 } catch (MailException $e) {
                     error_log('Provider notification email failed: ' . $mail->ErrorInfo);
+                }
+
+                // send confirmation email to the student
+                if ($studentEmail) {
+                    $studentDashboardUrl = $scheme . '://' . $host . '/inplace/student/dashboard.php';
+                    $studentHtml = "
+                    <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;'>
+                      <div style='background-color:#0c1b33;padding:2rem;text-align:center;'>
+                        <h1 style='color:#ffffff;font-size:1.5rem;margin:0;'>InPlace</h1>
+                        <p style='color:rgba(255,255,255,0.8);margin:0.5rem 0 0;font-size:0.9rem;'>Placement Request Submitted</p>
+                      </div>
+                      <div style='padding:2rem;'>
+                        <p style='color:#374151;font-size:1rem;margin-bottom:1rem;'>Dear " . htmlspecialchars($studentName) . ",</p>
+                        <p style='color:#374151;font-size:1rem;margin-bottom:1.5rem;'>
+                          Your placement request has been successfully submitted. The placement provider has been notified and will review your request shortly.
+                        </p>
+                        <table style='width:100%;border-collapse:collapse;margin-bottom:1.5rem;'>
+                          <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;width:40%;border-bottom:1px solid #e2e8f0;'>Company</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($companyName) . "</td></tr>
+                          <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Role</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars(trim($_POST['role_title'] ?? '')) . "</td></tr>
+                          <tr style='background:#f8f5f0;'><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;border-bottom:1px solid #e2e8f0;'>Start Date</td><td style='padding:0.75rem 1rem;color:#374151;border-bottom:1px solid #e2e8f0;'>" . htmlspecialchars($_POST['start_date'] ?? '') . "</td></tr>
+                          <tr><td style='padding:0.75rem 1rem;font-weight:600;color:#0c1b33;'>End Date</td><td style='padding:0.75rem 1rem;color:#374151;'>" . htmlspecialchars($_POST['end_date'] ?? '') . "</td></tr>
+                        </table>
+                        <p style='color:#374151;font-size:0.95rem;margin-bottom:1.5rem;'>You will receive another email once the provider has reviewed your request.</p>
+                        <div style='text-align:center;margin:2rem 0;'>
+                          <a href='$studentDashboardUrl' style='display:inline-block;padding:0.875rem 2rem;background-color:#0c1b33;color:#ffffff !important;text-decoration:none;border-radius:10px;font-weight:700;font-size:1rem;'>
+                            View My Dashboard
+                          </a>
+                        </div>
+                        <p style='color:#6b7a8d;font-size:0.85rem;text-align:center;'>This is an automated notification from InPlace.</p>
+                      </div>
+                    </div>";
+
+                    $mail2 = new PHPMailer(true);
+                    try {
+                        $mail2->isSMTP();
+                        $mail2->Host       = $mailCfg['smtp_host'];
+                        $mail2->SMTPAuth   = true;
+                        $mail2->Username   = $mailCfg['smtp_user'];
+                        $mail2->Password   = $mailCfg['smtp_pass'];
+                        $mail2->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                        $mail2->Port       = $mailCfg['smtp_port'];
+                        $mail2->CharSet    = 'UTF-8';
+                        $mail2->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
+                        $mail2->addAddress($studentEmail, $studentName);
+                        $mail2->isHTML(true);
+                        $mail2->Subject = 'InPlace - Your Placement Request at ' . $companyName . ' Has Been Submitted';
+                        $mail2->Body    = $studentHtml;
+                        $mail2->AltBody = "Your placement request at $companyName has been submitted and is awaiting provider approval.";
+                        $mail2->send();
+                    } catch (MailException $e) {
+                        error_log('Student confirmation email failed: ' . $mail2->ErrorInfo);
+                    }
                 }
             }
         }
