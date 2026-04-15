@@ -66,8 +66,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $actionMsg = "User deleted successfully.";
             $actionType = 'success';
         } catch (Exception $e) {
-            $actionMsg = "Cannot delete user - they have associated records.";
+            $actionMsg = "Cannot delete user - they have associated records. Use Hard Delete instead.";
             $actionType = 'danger';
+        }
+    }
+
+    if (isset($_POST['hard_delete_user'])) {
+        $targetUserId = (int)$_POST['user_id'];
+        if ($targetUserId === $userId) {
+            $actionMsg  = "You cannot delete your own account.";
+            $actionType = 'danger';
+        } else {
+            try {
+                $pdo->beginTransaction();
+
+                // delete records that reference placements first
+                $pdo->prepare("DELETE FROM placement_change_requests WHERE student_id = ?")->execute([$targetUserId]);
+                $pdo->prepare("DELETE pt FROM provider_tokens pt JOIN placements p ON pt.placement_id = p.id WHERE p.student_id = ?")->execute([$targetUserId]);
+                $pdo->prepare("DELETE d FROM documents d JOIN placements p ON d.placement_id = p.id WHERE p.student_id = ?")->execute([$targetUserId]);
+                $pdo->prepare("DELETE vs FROM visit_schedule vs JOIN placements p ON vs.placement_id = p.id WHERE p.student_id = ?")->execute([$targetUserId]);
+
+                // delete records that reference the user directly
+                $pdo->prepare("DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?")->execute([$targetUserId, $targetUserId]);
+                $pdo->prepare("DELETE FROM audit_log WHERE user_id = ?")->execute([$targetUserId]);
+                $pdo->prepare("DELETE FROM announcement_reads WHERE user_id = ?")->execute([$targetUserId]);
+
+                // delete placements, then the user
+                $pdo->prepare("DELETE FROM placements WHERE student_id = ?")->execute([$targetUserId]);
+                $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$targetUserId]);
+
+                $pdo->commit();
+                $actionMsg  = "User and all associated data permanently deleted.";
+                $actionType = 'success';
+            } catch (Exception $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $actionMsg  = "Hard delete failed: " . $e->getMessage();
+                $actionType = 'danger';
+            }
         }
     }
 
@@ -280,6 +315,11 @@ $companies = $pdo->query("SELECT id, name FROM companies ORDER BY name ASC")->fe
                                                 onclick="openConfirm('delete', <?= $u['id'] ?>, '<?= htmlspecialchars($u['full_name'], ENT_QUOTES) ?>')">
                                             Delete
                                         </button>
+                                        <button type="button" class="btn btn-sm"
+                                                style="background:#7f1d1d;color:#fff;border:none;"
+                                                onclick="openConfirm('hard_delete', <?= $u['id'] ?>, '<?= htmlspecialchars($u['full_name'], ENT_QUOTES) ?>')">
+                                            Hard Delete
+                                        </button>
                                     <?php endif; ?>
                                 </div>
                             </td>
@@ -485,10 +525,23 @@ function openConfirm(action, userId, userName) {
         btn.className   = 'btn btn-warning';
         btn.textContent = 'Deactivate';
         btn.name        = 'deactivate_user';
+    } else if (action === 'hard_delete') {
+        document.getElementById('confirmTitle').textContent = 'Hard Delete User';
+        document.getElementById('confirmDesc').innerHTML    =
+            '<strong style="color:#7f1d1d;">' + userName + '</strong> and ALL their data will be permanently erased — placements, documents, messages, audit logs, and tokens. This cannot be undone.';
+        btn.style.background = '#7f1d1d';
+        btn.style.color      = '#fff';
+        btn.style.border     = 'none';
+        btn.className        = 'btn';
+        btn.textContent      = 'Permanently Delete Everything';
+        btn.name             = 'hard_delete_user';
     } else {
         document.getElementById('confirmTitle').textContent = 'Delete User';
-        document.getElementById('confirmDesc').textContent  = 'Permanently delete ' + userName + '? This cannot be undone.';
+        document.getElementById('confirmDesc').textContent  = 'Permanently delete ' + userName + '? This cannot be undone. If they have associated records, use Hard Delete instead.';
         btn.className   = 'btn btn-danger';
+        btn.style.background = '';
+        btn.style.color      = '';
+        btn.style.border     = '';
         btn.textContent = 'Delete';
         btn.name        = 'delete_user';
     }
