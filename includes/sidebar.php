@@ -331,10 +331,16 @@
 
 <?php endif; ?>
 
+  <!-- ── Application Guide (all roles) ── -->
+  <a href="/inplace/app-guide.php"
+     class="nav-item <?= ($activePage === 'app-guide') ? 'active' : '' ?>"
+     style="margin-top:auto;">
+    <span class="nav-icon">📖</span> Application Guide
+  </a>
+
   <!-- ── Profile link (all roles) ── -->
   <a href="/inplace/profile.php"
-     class="nav-item <?= ($activePage === 'profile') ? 'active' : '' ?>"
-     style="margin-top:auto;">
+     class="nav-item <?= ($activePage === 'profile') ? 'active' : '' ?>">
     <span class="nav-icon">👤</span> My Profile
   </a>
 
