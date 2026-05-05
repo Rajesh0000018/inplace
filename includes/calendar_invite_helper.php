@@ -19,7 +19,7 @@ function sendCalendarInvite($visit, $organizer, $attendees) {
     // Generate unique UID for this meeting
     $uid = 'visit-' . $visit['id'] . '@inplace-system.com';
     
-    // Format dates for iCalendar (YYYYMMDDTHHmmss)
+    // Format dates for iCalendar (YYYYMMDDTHHmmss) 
     $startDateTime = new DateTime($visit['visit_date'] . ' ' . $visit['visit_time']);
     $endDateTime = clone $startDateTime;
     $endDateTime->modify('+' . ($visit['duration_hours'] ?? 2) . ' hours');

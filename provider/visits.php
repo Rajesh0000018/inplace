@@ -45,6 +45,47 @@ $stmt = $pdo->prepare("
 $stmt->execute([$provider['company_id']]);
 $allVisits = $stmt->fetchAll();
 
+// Also fetch provider meetings scheduled by tutors for this company
+try {
+    $stmt = $pdo->prepare("
+        SELECT
+            pm.id,
+            pm.meeting_date  AS visit_date,
+            pm.meeting_time  AS visit_time,
+            pm.duration_hours,
+            pm.type,
+            pm.location,
+            pm.meeting_link,
+            pm.agenda        AS purpose,
+            pm.status,
+            pm.contact_name,
+            pm.contact_email,
+            t.full_name      AS tutor_name,
+            t.avatar_initials AS tutor_initials,
+            t.email          AS tutor_email,
+            c.name           AS company_name,
+            NULL             AS student_name,
+            NULL             AS student_initials,
+            NULL             AS role_title,
+            'provider_meeting' AS record_type
+        FROM provider_meetings pm
+        JOIN users t ON pm.tutor_id = t.id
+        JOIN companies c ON pm.company_id = c.id
+        WHERE pm.company_id = ?
+        ORDER BY pm.meeting_date ASC, pm.meeting_time ASC
+    ");
+    $stmt->execute([$provider['company_id']]);
+    $providerMeetings = $stmt->fetchAll();
+} catch (Exception $e) {
+    $providerMeetings = [];
+}
+
+// Tag regular visits and merge
+foreach ($allVisits as &$v) { $v['record_type'] = 'visit'; }
+unset($v);
+$allVisits = array_merge($allVisits, $providerMeetings);
+usort($allVisits, fn($a, $b) => strcmp($a['visit_date'].' '.$a['visit_time'], $b['visit_date'].' '.$b['visit_time']));
+
 // ── POST: confirm / decline / reschedule ────────────────────────
 $visitFlash = ['msg' => '', 'type' => ''];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['v_action'])) {
@@ -250,8 +291,20 @@ $pendingRequests = 0;
                         </div>
                     </div>
 
-                    <!-- Student Info -->
+                    <!-- Visit / Meeting Info -->
                     <div class="visit-meta">
+                        <?php if (($visit['record_type'] ?? 'visit') === 'provider_meeting'): ?>
+                        <div class="visit-meta-row">
+                            <span>🤝</span>
+                            <strong>Meeting with:</strong>
+                            <?= htmlspecialchars($visit['contact_name'] ?: 'Provider Contact') ?>
+                        </div>
+                        <div class="visit-meta-row">
+                            <span>👨‍🏫</span>
+                            <strong>Tutor:</strong>
+                            <?= htmlspecialchars($visit['tutor_name']) ?>
+                        </div>
+                        <?php else: ?>
                         <div class="visit-meta-row">
                             <span>👨‍🎓</span>
                             <strong>Student:</strong>
@@ -267,6 +320,7 @@ $pendingRequests = 0;
                             <strong>Role:</strong>
                             <?= htmlspecialchars($visit['role_title']) ?>
                         </div>
+                        <?php endif; ?>
                         <?php if ($visit['location']): ?>
                         <div class="visit-meta-row">
                             <span>📍</span>
@@ -274,14 +328,23 @@ $pendingRequests = 0;
                             <?= htmlspecialchars($visit['location']) ?>
                         </div>
                         <?php endif; ?>
+                        <?php if (!empty($visit['meeting_link'])): ?>
+                        <div class="visit-meta-row">
+                            <span>🔗</span>
+                            <strong>Link:</strong>
+                            <a href="<?= htmlspecialchars($visit['meeting_link']) ?>" target="_blank" rel="noopener">
+                                Join Meeting
+                            </a>
+                        </div>
+                        <?php endif; ?>
                     </div>
 
-                    <!-- Purpose -->
+                    <!-- Purpose / Agenda -->
                     <?php if ($visit['purpose']): ?>
                     <div style="padding:0.875rem;background:var(--cream);
                                 border-radius:var(--radius-sm);margin-bottom:1rem;">
                         <p style="font-size:0.8125rem;color:var(--text);line-height:1.5;">
-                            <strong>Purpose:</strong><br>
+                            <strong><?= ($visit['record_type'] ?? 'visit') === 'provider_meeting' ? 'Agenda' : 'Purpose' ?>:</strong><br>
                             <?= nl2br(htmlspecialchars($visit['purpose'])) ?>
                         </p>
                     </div>
@@ -297,13 +360,14 @@ $pendingRequests = 0;
                         'rescheduled'  => ['review',   'Reschedule Pending'],
                         default        => ['open',     ucfirst($visit['status'])]
                     };
+                    $isProviderMeeting = ($visit['record_type'] ?? 'visit') === 'provider_meeting';
                     ?>
                     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
                         <span class="badge badge-<?= $statusBadge[0] ?>">
                             <?= $statusBadge[1] ?>
                         </span>
                         <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
-                            <?php if ($visit['status'] === 'scheduled'): ?>
+                            <?php if (!$isProviderMeeting && $visit['status'] === 'scheduled'): ?>
                             <form method="POST" style="display:inline;">
                                 <input type="hidden" name="visit_id" value="<?= $visit['id'] ?>">
                                 <input type="hidden" name="v_action" value="confirm">
@@ -334,7 +398,7 @@ $pendingRequests = 0;
         <?php if (!empty($pastVisits)): ?>
         <div class="panel">
             <div class="panel-header">
-                <h3>📋 Past Visits</h3>
+                <h3>📋 Past Visits & Meetings</h3>
             </div>
 
             <div class="table-wrap">
@@ -342,15 +406,16 @@ $pendingRequests = 0;
                     <thead>
                         <tr>
                             <th>Date</th>
-                            <th>Student</th>
+                            <th>Contact / Student</th>
                             <th>Tutor</th>
-                            <th>Purpose</th>
+                            <th>Purpose / Agenda</th>
                             <th>Status</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php foreach (array_slice($pastVisits, 0, 10) as $visit): ?>
+                        <?php $isPM = ($visit['record_type'] ?? 'visit') === 'provider_meeting'; ?>
                         <tr>
                             <td style="font-family:'DM Mono',monospace;font-size:0.875rem;">
                                 <?= date('M j, Y', strtotime($visit['visit_date'])) ?><br>
@@ -358,16 +423,23 @@ $pendingRequests = 0;
                                     <?= date('g:i A', strtotime($visit['visit_time'])) ?>
                                 </span>
                             </td>
-                            
+
                             <td>
                                 <div class="avatar-cell">
                                     <div class="avatar" style="width:32px;height:32px;">
-                                        <?= htmlspecialchars($visit['student_initials']) ?>
+                                        <?= $isPM
+                                            ? htmlspecialchars(mb_strtoupper(mb_substr($visit['contact_name'] ?? 'P', 0, 2)))
+                                            : htmlspecialchars($visit['student_initials']) ?>
                                     </div>
                                     <div>
                                         <h4 style="font-size:0.875rem;">
-                                            <?= htmlspecialchars($visit['student_name']) ?>
+                                            <?= $isPM
+                                                ? htmlspecialchars($visit['contact_name'] ?: 'Provider Contact')
+                                                : htmlspecialchars($visit['student_name']) ?>
                                         </h4>
+                                        <?php if ($isPM): ?>
+                                        <p style="font-size:0.75rem;color:var(--muted);">Tutor meeting</p>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
                             </td>
@@ -397,10 +469,13 @@ $pendingRequests = 0;
                             </td>
 
                             <td>
-                                <a href="view-visit.php?id=<?= $visit['id'] ?>" 
-                                   class="btn btn-ghost btn-sm">
-                                    View Details
-                                </a>
+                                <?php if (!$isPM): ?>
+                                <a href="view-visit.php?id=<?= $visit['id'] ?>"
+                                   class="btn btn-ghost btn-sm">View Details</a>
+                                <?php else: ?>
+                                <a href="mailto:<?= htmlspecialchars($visit['tutor_email']) ?>"
+                                   class="btn btn-ghost btn-sm">📧 Tutor</a>
+                                <?php endif; ?>
                             </td>
                         </tr>
                         <?php endforeach; ?>

@@ -34,17 +34,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_reminder'])) {
     $studentName  = trim($_POST['student_name']);
     $missingTypes = $_POST['missing_types'] ?? [];   // ['interim','final']
 
-    if ($studentEmail && !empty($missingTypes)) {
+    if (!$studentEmail || empty($missingTypes)) {
+        $actionMsg  = "Could not send reminder: student email or report type is missing.";
+        $actionType = 'danger';
+    } else {
         loadAppConfig($pdo);
         $mailCfg = require __DIR__ . '/../config/email_config.php';
 
         $missingList = implode(' and ', array_map('ucfirst', $missingTypes)) . ' Report' . (count($missingTypes) > 1 ? 's' : '');
-
         $scheme      = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-        $host        = $_SERVER['HTTP_HOST'] ?? 'localhost';
-        $reportsUrl  = $scheme . '://' . $host . '/inplace/student/reports.php';
-
-        $tutorName = authName();
+        $reportsUrl  = $scheme . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . '/inplace/login.php';
+        $tutorName   = authName();
 
         $htmlBody = "
         <div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;
@@ -92,15 +92,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_reminder'])) {
             $mail->setFrom($mailCfg['from_email'], $mailCfg['from_name']);
             $mail->addAddress($studentEmail, $studentName);
             $mail->isHTML(true);
-            $mail->Subject = 'InPlace - Placement Report Reminder: ' . $missingList . ' Required';
+            $mail->Subject = 'InPlace — Report Reminder: ' . $missingList . ' Required';
             $mail->Body    = $htmlBody;
-            $mail->AltBody = "Reminder: Your $missingList for your placement has not been submitted. Please log in at: $reportsUrl";
+            $mail->AltBody = "Reminder: Your $missingList has not been submitted. Log in at: $reportsUrl";
             $mail->send();
-            $actionMsg  = "Reminder email sent to " . htmlspecialchars($studentName) . " successfully.";
+            $actionMsg  = "Reminder sent to " . htmlspecialchars($studentName) . " (" . htmlspecialchars($studentEmail) . ") successfully.";
             $actionType = 'success';
         } catch (MailException $e) {
             error_log('Reminder email failed: ' . $mail->ErrorInfo);
-            $actionMsg  = "Failed to send reminder email. Please check SMTP settings.";
+            $actionMsg  = "Email failed: " . $mail->ErrorInfo;
+            $actionType = 'danger';
+        } catch (\Exception $e) {
+            error_log('Reminder email exception: ' . $e->getMessage());
+            $actionMsg  = "Email failed: " . $e->getMessage();
             $actionType = 'danger';
         }
     }
@@ -534,14 +538,8 @@ $missing = $stmt->fetchAll();
                                 <?php endif; ?>
                             </td>
                             <td>
-                                <button class="btn btn-ghost btn-sm"
-                                        onclick="openReminder(
-                                            <?= (int)$m['student_id'] ?>,
-                                            <?= json_encode($m['student_email'], JSON_HEX_TAG) ?>,
-                                            <?= json_encode($m['student_name'], JSON_HEX_TAG) ?>,
-                                            <?= (int)$m['interim_submitted'] ?>,
-                                            <?= (int)$m['final_submitted'] ?>
-                                        )">
+                                <button type="button" class="btn btn-primary btn-sm"
+                                        onclick="openReminder(<?= (int)$m['student_id'] ?>, '<?= htmlspecialchars(addslashes($m['student_email'])) ?>', '<?= htmlspecialchars(addslashes($m['student_name'])) ?>', <?= $m['interim_submitted'] > 0 ? 'true' : 'false' ?>, <?= $m['final_submitted'] > 0 ? 'true' : 'false' ?>)">
                                     📧 Send Reminder
                                 </button>
                             </td>

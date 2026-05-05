@@ -88,7 +88,7 @@ $stmt = $pdo->query("
     SELECT DISTINCT c.city
     FROM companies c
     JOIN placements p ON p.company_id = c.id
-    WHERE p.status IN ('approved','active') AND c.city IS NOT NULL
+    WHERE p.status IN ('approved','active') AND c.city IS NOT NULL AND c.city != ''
     ORDER BY c.city ASC
 ");
 $cities = $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -202,7 +202,7 @@ $cities = $stmt->fetchAll(PDO::FETCH_COLUMN);
                                     <?= htmlspecialchars($p['company_name']) ?>
                                 </div>
                                 <div style="font-size:0.8125rem;color:var(--muted);">
-                                    <?= htmlspecialchars($p['company_city'] ?? 'N/A') ?>
+                                    <?= htmlspecialchars($p['company_city'] ?: 'N/A') ?>
                                     <?= $p['company_sector'] ? ' · ' . htmlspecialchars($p['company_sector']) : '' ?>
                                 </div>
                             </td>
