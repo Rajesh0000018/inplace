@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(grep -v \"ck320\" \"C:/xampp/apache/logs/error.log\")",
-      "Bash(mv \"C:/xampp/apache/logs/error_clean.log\" \"C:/xampp/apache/logs/error.log\")"
-    ]
-  }
-}

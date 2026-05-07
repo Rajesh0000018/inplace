@@ -6,6 +6,9 @@ config/email_config.php
 assets/uploads/*
 !assets/uploads/.gitkeep
 
+# Claude Code
+.claude/
+
 # Environment / IDE
 .env
 .env.local
