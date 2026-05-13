@@ -157,10 +157,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['notif_action'])) {
             }
         }
 
+        // Notify the student directly for role/location/supervisor/contract changes
+        if ($pi) {
+            $studentNotifMsg = match($notifType) {
+                'role_change'        => "💼 Your employer has notified a Role Change for your placement. Reason: {$reason}",
+                'location_change'    => "📍 Your employer has notified a Location Change for your placement. Reason: {$reason}",
+                'supervisor_change'  => "👤 Your employer has notified a Supervisor Change for your placement. Reason: {$reason}",
+                'contract_extension' => "📅 Good news — your employer has submitted a Contract Extension for your placement. Reason: {$reason}",
+                'early_termination'  => "🔴 Your placement has been terminated early by your employer. Reason: {$reason}",
+                default              => "📋 Your employer has submitted a placement change notification ({$typeLabel}). Reason: {$reason}",
+            };
+            $studStmt = $pdo->prepare("SELECT student_id FROM placements WHERE id=?");
+            $studStmt->execute([$placementId]);
+            $studentId = (int)($studStmt->fetchColumn() ?: 0);
+            if ($studentId) {
+                try {
+                    $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'placement_change', ?)")
+                        ->execute([$studentId, $studentNotifMsg]);
+                } catch (Exception $e) { error_log('Terminate notification: ' . $e->getMessage()); }
+            }
+        }
+
         $flash = [
             'msg'  => $isTermination
                 ? 'Early termination recorded. The student and tutor have been notified.'
-                : 'Change notification submitted. The tutor has been notified.',
+                : 'Change notification submitted. The tutor and student have been notified.',
             'type' => 'success',
         ];
     }

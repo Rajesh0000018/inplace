@@ -84,6 +84,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['eval_action'])) {
             trim($_POST['additional_comments'] ?? ''),
             isset($_POST['recommend_future']) ? 1 : 0,
         ]);
+        // Notify the student
+        $stud = $pdo->prepare("SELECT student_id FROM placements WHERE id=?");
+        $stud->execute([$placementId]);
+        $studentId = (int)($stud->fetchColumn() ?: 0);
+        if ($studentId) {
+            $stars     = $rating('overall_rating');
+            $starStr   = str_repeat('★', $stars) . str_repeat('☆', 5 - $stars);
+            $periodLbl = ucfirst($period);
+            try {
+                $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'evaluation', ?)")
+                    ->execute([$studentId,
+                        "Your {$periodLbl} evaluation has been submitted by your employer. Overall rating: {$starStr} ({$stars}/5)."
+                    ]);
+            } catch (Exception $e) { error_log('Eval notification: ' . $e->getMessage()); }
+        }
+
         $flash = ['msg' => 'Evaluation saved successfully.', 'type' => 'success'];
     }
 }

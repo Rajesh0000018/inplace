@@ -77,7 +77,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['opp_action'])) {
                 VALUES (?,?,?,?,?,?,?,?,?,?,?)
             ")->execute([$companyId, $userId, $title, $description, $requirements, $salary,
                          $startEst ?: null, $duration, $positions, $skills, $deadline ?: null]);
-            $flash = ['msg' => 'Opportunity posted successfully.', 'type' => 'success'];
+            // Notify all approved students
+            $companyName = $company['name'] ?? 'A company';
+            $notifMsg = "💡 New placement opportunity posted by {$companyName}: {$title}"
+                      . ($duration ? " ({$duration} months)" : '')
+                      . ($skills ? " — Skills: {$skills}" : '');
+            try {
+                $allStudents = $pdo->query("SELECT id FROM users WHERE role='student' AND approval_status='approved'");
+                $insertNotif = $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'opportunity', ?)");
+                foreach ($allStudents->fetchAll(PDO::FETCH_COLUMN) as $sid) {
+                    $insertNotif->execute([$sid, $notifMsg]);
+                }
+            } catch (Exception $e) { error_log('Opportunity notification: ' . $e->getMessage()); }
+
+            $flash = ['msg' => 'Opportunity posted successfully. All students have been notified.', 'type' => 'success'];
         } else {
             // Verify ownership
             $pdo->prepare("

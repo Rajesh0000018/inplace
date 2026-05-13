@@ -105,6 +105,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['issue_action'])) {
             }
         } catch (Exception $e) { error_log('Issue message: ' . $e->getMessage()); }
 
+        // Notification for tutor(s)
+        $sLabel = match($severity) { 'high' => '🔴 High', 'medium' => '🟡 Medium', default => '🟢 Low' };
+        $notifMsg = "⚠️ Provider reported a {$sLabel} issue for a student: {$issueType}."
+                  . ($desiredOutcome ? " Desired outcome: {$desiredOutcome}" : '');
+        foreach ($tutorIds as $tid) {
+            try {
+                $pdo->prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, 'provider_issue', ?)")
+                    ->execute([$tid, $notifMsg]);
+            } catch (Exception $e) { error_log('Issue notification: ' . $e->getMessage()); }
+        }
+
         $flash = ['msg' => 'Issue reported. The tutor has been notified and will follow up shortly.', 'type' => 'success'];
     }
 }
